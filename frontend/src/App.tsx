@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Camera, MapPin, Database, Route as RouteIcon, UploadCloud, StopCircle, PlayCircle } from 'lucide-react';
+import { Camera, MapPin, Database, Route as RouteIcon, UploadCloud, StopCircle, PlayCircle, ScanSearch, Check, X } from 'lucide-react';
 import { api, API_URL } from './services/api';
 import { queueSegment, queueGpsPoint, pendingCounts, startAutoFlush } from './services/offlineQueue';
 
@@ -16,6 +16,18 @@ type Asset = {
   id:number; name:string; asset_type:string; layer:string; status:string;
   latitude?:number; longitude?:number; underground:boolean; source:string;
 };
+type Detection = {
+  id:number; route_id?:number; proposed_asset_type:string; proposed_layer:string;
+  confidence:number; latitude?:number; longitude?:number; status:string;
+  snapshot_path?:string; created_at:string;
+};
+
+const assetTypeLabels: Record<string,string> = {
+  fire_hydrant:'ברז כיבוי', stop_sign:'תמרור עצור', traffic_light:'רמזור',
+  bench:'ספסל', parking_meter:'מדחן', telephone_cabinet:'ארון תקשורת',
+  electricity_pole:'עמוד חשמל', sewage_manhole:'שוחת ביוב', water_valve:'ברז מים'
+};
+const statusLabels: Record<string,string> = { draft:'ממתין לאישור', approved:'אושר', rejected:'נדחה' };
 
 const layerLabels: Record<string,string> = {
   telecom:'תקשורת וטלפוניה', electricity:'חשמל', water:'מים', sewage:'ביוב',
@@ -23,9 +35,10 @@ const layerLabels: Record<string,string> = {
 };
 
 export default function App() {
-  const [tab, setTab] = useState<'record'|'assets'|'dashboard'>('record');
+  const [tab, setTab] = useState<'record'|'detections'|'assets'|'dashboard'>('record');
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
   const [assets, setAssets] = useState<Asset[]>([]);
+  const [detections, setDetections] = useState<Detection[]>([]);
   const [routeId, setRouteId] = useState<number | null>(null);
   const [recording, setRecording] = useState(false);
   const [status, setStatus] = useState('מוכן');
@@ -40,6 +53,12 @@ export default function App() {
   async function refresh() {
     setDashboard(await api<Dashboard>('/dashboard'));
     setAssets(await api<Asset[]>('/assets'));
+    setDetections(await api<Detection[]>('/detections'));
+  }
+
+  async function decideDetection(id: number, action: 'approve'|'reject') {
+    await api(`/detections/${id}/${action}`, {method:'POST'});
+    refresh();
   }
 
   async function refreshPending() {
@@ -165,6 +184,10 @@ export default function App() {
 
     <nav className="tabs">
       <button onClick={()=>setTab('record')} className={tab==='record'?'active':''}><Camera size={18}/> הקלטה</button>
+      <button onClick={()=>setTab('detections')} className={tab==='detections'?'active':''}>
+        <ScanSearch size={18}/> זיהויים
+        {detections.filter(d=>d.status==='draft').length > 0 && ` (${detections.filter(d=>d.status==='draft').length})`}
+      </button>
       <button onClick={()=>setTab('assets')} className={tab==='assets'?'active':''}><Database size={18}/> נכסים</button>
       <button onClick={()=>setTab('dashboard')} className={tab==='dashboard'?'active':''}><MapPin size={18}/> לוח בקרה</button>
     </nav>
@@ -187,6 +210,38 @@ export default function App() {
             הווידאו מפוצל למקטעים של 15 שניות. במקרה של ניתוק המקטעים נשמרים ב־IndexedDB ועולים אוטומטית כשהחיבור חוזר.
             {(pending.segments > 0 || pending.gps > 0) && ` ממתינים להעלאה: ${pending.segments} מקטעים, ${pending.gps} נקודות GPS.`}
           </span>
+        </div>
+      </section>}
+
+      {tab==='detections' && <section>
+        <div className="section-head"><div>
+          <h2>זיהויי AI</h2>
+          <p>זיהויים אוטומטיים ממקטעי הווידאו. אישור הופך זיהוי לנכס במאגר; דחייה מסירה אותו.</p>
+        </div></div>
+        {!detections.length && <div className="empty-note">
+          אין עדיין זיהויים. ה־worker מעבד כל מקטע וידאו שעולה ומזהה נכסים גלויים (בשלב הפיילוט: ברזי כיבוי, תמרורים, רמזורים, ספסלים ומדחנים).
+        </div>}
+        <div className="detection-grid">
+          {detections.map(d => <div className="detection-card" key={d.id}>
+            {d.snapshot_path && <img src={`${API_URL}/detections/${d.id}/snapshot`} alt={d.proposed_asset_type} loading="lazy"/>}
+            <div className="detection-body">
+              <div className="detection-title">
+                <strong>{assetTypeLabels[d.proposed_asset_type] || d.proposed_asset_type}</strong>
+                <span className={`chip ${d.status}`}>{statusLabels[d.status] || d.status}</span>
+              </div>
+              <div className="detection-meta">
+                <span>{layerLabels[d.proposed_layer] || d.proposed_layer}</span>
+                <span>ביטחון: {Math.round(d.confidence*100)}%</span>
+                {d.latitude != null && d.longitude != null
+                  ? <span>{d.latitude.toFixed(5)}, {d.longitude.toFixed(5)}</span>
+                  : <span>ללא מיקום</span>}
+              </div>
+              {d.status==='draft' && <div className="detection-actions">
+                <button className="approve" onClick={()=>decideDetection(d.id,'approve')}><Check size={16}/> אישור</button>
+                <button className="reject" onClick={()=>decideDetection(d.id,'reject')}><X size={16}/> דחייה</button>
+              </div>}
+            </div>
+          </div>)}
         </div>
       </section>}
 

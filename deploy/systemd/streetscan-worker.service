@@ -1,0 +1,18 @@
+[Unit]
+Description=Buqata StreetScan YOLO worker
+After=network.target postgresql.service
+
+[Service]
+User=streetscan
+Group=streetscan
+WorkingDirectory=/opt/buqata-streetscan/backend
+EnvironmentFile=/opt/buqata-streetscan/backend/.env
+ExecStart=/opt/buqata-streetscan/backend/.venv/bin/python -m app.worker
+Restart=always
+RestartSec=10
+# YOLO inference on CPU can be hungry; keep it polite next to the other apps.
+Nice=10
+CPUWeight=50
+
+[Install]
+WantedBy=multi-user.target

@@ -42,12 +42,15 @@ class AssetOut(AssetCreate):
 
 class DetectionOut(BaseModel):
     id: int
+    route_id: int | None
+    video_segment_id: int | None
     proposed_asset_type: str
     proposed_layer: InfrastructureLayer
     confidence: float
     latitude: float | None
     longitude: float | None
     status: DetectionStatus
+    snapshot_path: str | None
     created_at: datetime
     model_config = ConfigDict(from_attributes=True)
 

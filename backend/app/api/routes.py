@@ -1,7 +1,8 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 import uuid
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
+from fastapi.responses import FileResponse
 from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 
@@ -12,13 +13,19 @@ from app.schemas.common import RouteCreate, RouteOut, GPSPointCreate, AssetCreat
 
 router = APIRouter()
 
+def to_naive_utc(dt: datetime) -> datetime:
+    """Store everything as naive UTC so DB comparisons never mix aware/naive."""
+    if dt.tzinfo is not None:
+        return dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
+
 def parse_client_timestamp(value: str | None) -> datetime:
     """Parse an ISO timestamp from the browser (JS toISOString ends with 'Z',
     which datetime.fromisoformat rejects on Python < 3.11)."""
     if not value:
         return datetime.utcnow()
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return to_naive_utc(datetime.fromisoformat(value.replace("Z", "+00:00")))
     except ValueError:
         return datetime.utcnow()
 
@@ -57,7 +64,7 @@ def add_gps_point(payload: GPSPointCreate, db: Session = Depends(get_db)):
         longitude=payload.longitude,
         accuracy_m=payload.accuracy_m,
         speed_mps=payload.speed_mps,
-        captured_at=payload.captured_at or datetime.utcnow(),
+        captured_at=to_naive_utc(payload.captured_at) if payload.captured_at else datetime.utcnow(),
     )
     db.add(point)
     db.commit()
@@ -135,6 +142,16 @@ def approve_detection(detection_id: int, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(asset)
     return asset
+
+@router.get("/detections/{detection_id}/snapshot")
+def detection_snapshot(detection_id: int, db: Session = Depends(get_db)):
+    detection = db.get(Detection, detection_id)
+    if not detection or not detection.snapshot_path:
+        raise HTTPException(404, "Snapshot not found")
+    path = Path(detection.snapshot_path)
+    if not path.is_file():
+        raise HTTPException(404, "Snapshot file missing")
+    return FileResponse(path, media_type="image/jpeg")
 
 @router.post("/detections/{detection_id}/reject", response_model=DetectionOut)
 def reject_detection(detection_id: int, db: Session = Depends(get_db)):

@@ -7,6 +7,12 @@ class Settings(BaseSettings):
     upload_dir: str = "./uploads"
     cors_origins: str = "http://localhost:5173"
 
+    # AI worker
+    model_path: str = "yolo11n.pt"          # swap for custom municipal-asset weights
+    detection_confidence: float = 0.35
+    frame_stride_s: float = 1.0             # analyse one frame per second
+    worker_poll_s: int = 10
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     @property

@@ -27,6 +27,16 @@ cd $DEPLOY_ROOT/backend
 [ -d .venv ] || python3 -m venv .venv
 .venv/bin/pip install -q -r requirements.txt
 
+echo "== ai worker deps =="
+# opencv needs these even in a headless install path (ultralytics pulls opencv-python)
+apt-get install -y -q libgl1 libglib2.0-0 >/dev/null
+if ! .venv/bin/python -c "import ultralytics" 2>/dev/null; then
+    .venv/bin/pip install -q torch torchvision --index-url https://download.pytorch.org/whl/cpu
+    .venv/bin/pip install -q -r requirements-ai.txt
+else
+    echo "ultralytics already installed"
+fi
+
 echo "== postgres =="
 ROLE_EXISTS=$(sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='$DB_USER'" || true)
 DB_EXISTS=$(sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='$DB_NAME'" || true)
@@ -57,9 +67,11 @@ chown -R $APP_USER:$APP_USER $DEPLOY_ROOT
 
 echo "== systemd =="
 cp $DEPLOY_ROOT/deploy/systemd/streetscan-api.service /etc/systemd/system/
+cp $DEPLOY_ROOT/deploy/systemd/streetscan-worker.service /etc/systemd/system/
 systemctl daemon-reload
-systemctl enable streetscan-api
+systemctl enable streetscan-api streetscan-worker
 systemctl restart streetscan-api
+systemctl restart streetscan-worker
 
 echo "== nginx =="
 cp $DEPLOY_ROOT/deploy/nginx/streetscan.conf /etc/nginx/sites-available/$DOMAIN
@@ -77,5 +89,6 @@ fi
 echo "== health check =="
 sleep 2
 systemctl is-active streetscan-api
+systemctl is-active streetscan-worker
 curl -sf http://127.0.0.1:8005/api/health && echo
 echo "== done =="

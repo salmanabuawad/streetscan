@@ -1,0 +1,4 @@
+# AI worker dependencies (heavy). Install CPU torch first on servers without a GPU:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+ultralytics>=8.3,<9
+opencv-python-headless>=4.8

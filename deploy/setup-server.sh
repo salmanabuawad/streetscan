@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# Idempotent server setup for scan.kortexd.com.
+# Expects the repo staged at /tmp/streetscan-stage (backend, frontend/dist, deploy, scripts).
+set -euo pipefail
+
+DEPLOY_ROOT=/opt/buqata-streetscan
+APP_USER=streetscan
+DB_NAME=streetscan
+DB_USER=streetscan
+DOMAIN=scan.kortexd.com
+STAGE=/tmp/streetscan-stage
+
+echo "== system user =="
+id -u $APP_USER &>/dev/null || useradd --system --home $DEPLOY_ROOT --shell /usr/sbin/nologin $APP_USER
+
+echo "== copy files (preserving .env, venv, uploads) =="
+mkdir -p $DEPLOY_ROOT
+if [ -f $DEPLOY_ROOT/backend/.env ]; then cp $DEPLOY_ROOT/backend/.env /tmp/streetscan.env.bak; fi
+cp -r $STAGE/backend $STAGE/deploy $STAGE/scripts $DEPLOY_ROOT/
+mkdir -p $DEPLOY_ROOT/frontend
+rm -rf $DEPLOY_ROOT/frontend/dist
+cp -r $STAGE/frontend/dist $DEPLOY_ROOT/frontend/
+if [ -f /tmp/streetscan.env.bak ]; then mv /tmp/streetscan.env.bak $DEPLOY_ROOT/backend/.env; fi
+
+echo "== python venv =="
+cd $DEPLOY_ROOT/backend
+[ -d .venv ] || python3 -m venv .venv
+.venv/bin/pip install -q -r requirements.txt
+
+echo "== postgres =="
+ROLE_EXISTS=$(sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='$DB_USER'" || true)
+DB_EXISTS=$(sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='$DB_NAME'" || true)
+if [ ! -f $DEPLOY_ROOT/backend/.env ]; then
+    DB_PASS=$(openssl rand -hex 24)
+    if [ "$ROLE_EXISTS" = "1" ]; then
+        sudo -u postgres psql -c "ALTER ROLE $DB_USER WITH PASSWORD '$DB_PASS'"
+    else
+        sudo -u postgres psql -c "CREATE USER $DB_USER WITH PASSWORD '$DB_PASS'"
+    fi
+    [ "$DB_EXISTS" = "1" ] || sudo -u postgres psql -c "CREATE DATABASE $DB_NAME OWNER $DB_USER"
+    cat > $DEPLOY_ROOT/backend/.env <<EOF
+APP_NAME=Buqata StreetScan
+API_PREFIX=/api
+DATABASE_URL=postgresql+psycopg://$DB_USER:$DB_PASS@127.0.0.1:5432/$DB_NAME
+UPLOAD_DIR=$DEPLOY_ROOT/backend/uploads
+CORS_ORIGINS=https://$DOMAIN
+EOF
+    chmod 600 $DEPLOY_ROOT/backend/.env
+else
+    echo "existing .env kept"
+    [ "$DB_EXISTS" = "1" ] || sudo -u postgres psql -c "CREATE DATABASE $DB_NAME OWNER $DB_USER"
+fi
+
+echo "== permissions =="
+mkdir -p $DEPLOY_ROOT/backend/uploads
+chown -R $APP_USER:$APP_USER $DEPLOY_ROOT
+
+echo "== systemd =="
+cp $DEPLOY_ROOT/deploy/systemd/streetscan-api.service /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable streetscan-api
+systemctl restart streetscan-api
+
+echo "== nginx =="
+cp $DEPLOY_ROOT/deploy/nginx/streetscan.conf /etc/nginx/sites-available/$DOMAIN
+ln -sf /etc/nginx/sites-available/$DOMAIN /etc/nginx/sites-enabled/$DOMAIN
+nginx -t
+systemctl reload nginx
+
+echo "== tls =="
+if [ ! -d /etc/letsencrypt/live/$DOMAIN ]; then
+    certbot --nginx -d $DOMAIN --non-interactive --agree-tos -m salman.abuawad@gmail.com --redirect
+else
+    echo "certificate already present"
+fi
+
+echo "== health check =="
+sleep 2
+systemctl is-active streetscan-api
+curl -sf http://127.0.0.1:8005/api/health && echo
+echo "== done =="

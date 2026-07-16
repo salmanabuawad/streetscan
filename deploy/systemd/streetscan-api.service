@@ -3,11 +3,11 @@ Description=Buqata StreetScan FastAPI
 After=network.target postgresql.service
 
 [Service]
-User=www-data
-Group=www-data
+User=streetscan
+Group=streetscan
 WorkingDirectory=/opt/buqata-streetscan/backend
 EnvironmentFile=/opt/buqata-streetscan/backend/.env
-ExecStart=/opt/buqata-streetscan/backend/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
+ExecStart=/opt/buqata-streetscan/backend/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8005
 Restart=always
 RestartSec=5
 

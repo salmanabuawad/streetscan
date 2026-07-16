@@ -10,9 +10,13 @@ EnvironmentFile=/opt/buqata-streetscan/backend/.env
 ExecStart=/opt/buqata-streetscan/backend/.venv/bin/python -m app.worker
 Restart=always
 RestartSec=10
-# YOLO inference on CPU can be hungry; keep it polite next to the other apps.
+# YOLO inference on CPU can be hungry; keep it polite next to the other apps
+# on this shared 4GB box. MemoryMax kills+restarts the worker instead of
+# letting it OOM a neighbour service.
 Nice=10
 CPUWeight=50
+MemoryHigh=1200M
+MemoryMax=1536M
 
 [Install]
 WantedBy=multi-user.target

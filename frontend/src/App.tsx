@@ -183,7 +183,13 @@ export default function App() {
             setStatus('GPS נשמר בדפדפן; ההעלאה תתחדש עם החיבור');
           }
         },
-        () => setStatus('אין הרשאת GPS'),
+        err => {
+          // 1=denied (fatal until the user changes browser/OS settings),
+          // 2=unavailable, 3=timeout (watchPosition keeps retrying both).
+          if (err.code === 1) setStatus('הרשאת מיקום נדחתה — אפשר מיקום ל־Safari בהגדרות iOS ובאתר (aA ← הגדרות אתר ← מיקום), ורענן');
+          else if (err.code === 2) setStatus('אין אות GPS — ממשיך לנסות');
+          else setStatus('ממתין לאות GPS...');
+        },
         { enableHighAccuracy:true, maximumAge:3000, timeout:10000 }
       );
 

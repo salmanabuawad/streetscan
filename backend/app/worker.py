@@ -107,8 +107,26 @@ def cluster_sightings(sightings: list[dict]) -> list[dict]:
     return kept
 
 
+def open_capture(path: str) -> tuple[cv2.VideoCapture, int | None]:
+    """Open a video and honour its rotation metadata. Phones record
+    sensor-native landscape and mark portrait via metadata; without this,
+    frames arrive sideways and detection quality collapses."""
+    cap = cv2.VideoCapture(path)
+    rotate_code = None
+    if cap.isOpened():
+        applied = cap.set(cv2.CAP_PROP_ORIENTATION_AUTO, 1)
+        meta = int(cap.get(cv2.CAP_PROP_ORIENTATION_META) or 0)
+        if not applied and meta:
+            rotate_code = {
+                90: cv2.ROTATE_90_CLOCKWISE,
+                180: cv2.ROTATE_180,
+                270: cv2.ROTATE_90_COUNTERCLOCKWISE,
+            }.get(meta)
+    return cap, rotate_code
+
+
 def process_segment(db, segment: VideoSegment, detector) -> int:
-    cap = cv2.VideoCapture(segment.filename)
+    cap, rotate_code = open_capture(segment.filename)
     if not cap.isOpened():
         log.warning("cannot open segment %s (%s)", segment.id, segment.filename)
         return 0
@@ -130,6 +148,8 @@ def process_segment(db, segment: VideoSegment, detector) -> int:
         if idx % stride == 0:
             ok, frame = cap.retrieve()
             if ok and frame is not None:
+                if rotate_code is not None:
+                    frame = cv2.rotate(frame, rotate_code)
                 for name, conf, box in detector.detect(frame):
                     if name in CLASS_MAP and conf >= settings.detection_confidence:
                         sightings.append({"t": idx / fps, "name": name, "conf": conf,

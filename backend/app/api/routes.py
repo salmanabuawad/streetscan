@@ -237,6 +237,45 @@ def create_ticket(payload: TicketCreate, db: Session = Depends(get_db)):
 def list_tickets(db: Session = Depends(get_db)):
     return db.scalars(select(Ticket).order_by(Ticket.created_at.desc()).limit(500)).all()
 
+@router.get("/map-data")
+def map_data(db: Session = Depends(get_db)):
+    """Everything the GIS map needs in one call: located assets, located
+    detections, and per-route GPS tracks."""
+    assets = db.scalars(
+        select(Asset).where(Asset.latitude.is_not(None), Asset.longitude.is_not(None))
+        .order_by(Asset.id).limit(2000)
+    ).all()
+    detections = db.scalars(
+        select(Detection).where(Detection.latitude.is_not(None), Detection.longitude.is_not(None))
+        .order_by(Detection.id).limit(2000)
+    ).all()
+    routes = db.scalars(select(Route).order_by(Route.id.desc()).limit(20)).all()
+    tracks = []
+    for route in routes:
+        points = db.scalars(
+            select(GPSPoint).where(GPSPoint.route_id == route.id)
+            .order_by(GPSPoint.captured_at).limit(5000)
+        ).all()
+        if points:
+            tracks.append({
+                "route_id": route.id,
+                "vehicle_name": route.vehicle_name,
+                "points": [[p.latitude, p.longitude] for p in points],
+            })
+    return {
+        "assets": [{
+            "id": a.id, "name": a.name, "asset_type": a.asset_type,
+            "layer": a.layer.value, "status": a.status.value,
+            "lat": a.latitude, "lng": a.longitude, "underground": a.underground,
+        } for a in assets],
+        "detections": [{
+            "id": d.id, "asset_type": d.proposed_asset_type, "layer": d.proposed_layer.value,
+            "confidence": d.confidence, "status": d.status.value,
+            "lat": d.latitude, "lng": d.longitude,
+        } for d in detections],
+        "tracks": tracks,
+    }
+
 @router.get("/dashboard")
 def dashboard(db: Session = Depends(get_db)):
     asset_count = db.scalar(select(func.count()).select_from(Asset)) or 0

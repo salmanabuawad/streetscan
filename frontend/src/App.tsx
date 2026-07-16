@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Camera, MapPin, Database, Route as RouteIcon, UploadCloud, StopCircle, PlayCircle, ScanSearch, Check, X, Film, Trash2 } from 'lucide-react';
 import { api, API_URL } from './services/api';
 import { queueSegment, queueGpsPoint, pendingCounts, startAutoFlush } from './services/offlineQueue';
+import MapView from './MapView';
 
 const SEGMENT_MS = 15000;
 
@@ -374,11 +375,7 @@ export default function App() {
           <div className="metric"><span>זיהויים</span><strong>{dashboard?.detections ?? 0}</strong></div>
           <div className="metric"><span>קריאות</span><strong>{dashboard?.tickets ?? 0}</strong></div>
         </div>
-        <div className="map-placeholder">
-          <MapPin size={38}/>
-          <strong>GIS Map</strong>
-          <p>בשלב הבא יש לחבר Leaflet או OpenLayers ולצרוך GeoJSON מה־backend.</p>
-        </div>
+        <MapView layerLabels={layerLabels} assetTypeLabels={assetTypeLabels}/>
       </section>}
     </main>
   </div>

@@ -1,0 +1,41 @@
+:root{
+  font-family: Inter, Arial, sans-serif;
+  color:#e5e7eb;
+  background:#0b1220;
+}
+*{box-sizing:border-box}
+body{margin:0;background:#0b1220}
+button{font:inherit}
+.app-shell{max-width:1100px;margin:auto;padding:18px}
+.topbar{display:flex;justify-content:space-between;gap:20px;align-items:center;margin-bottom:18px}
+.topbar h1{margin:0;font-size:28px}
+.topbar p{margin:5px 0 0;color:#94a3b8}
+.status{background:#1e293b;padding:8px 12px;border-radius:999px;color:#cbd5e1}
+.status.live{background:#7f1d1d;color:#fee2e2}
+.tabs{display:flex;gap:8px;margin-bottom:18px;flex-wrap:wrap}
+.tabs button{display:flex;gap:8px;align-items:center;border:1px solid #334155;background:#111827;color:#cbd5e1;padding:10px 14px;border-radius:12px;cursor:pointer}
+.tabs button.active{background:#2563eb;border-color:#2563eb;color:white}
+.panel,.metric,.layer-card,.table-wrap,.map-placeholder{background:#111827;border:1px solid #243244;border-radius:18px}
+.hero{text-align:center;padding:34px}
+.record-icon{width:84px;height:84px;border-radius:24px;background:#172554;display:grid;place-items:center;margin:0 auto 14px}
+.hero h2{margin:0}
+.hero p{color:#94a3b8}
+.coords{display:flex;justify-content:center;gap:14px;flex-wrap:wrap;margin:20px 0;color:#cbd5e1}
+.big{display:inline-flex;gap:10px;align-items:center;padding:14px 22px;border:0;border-radius:14px;color:white;cursor:pointer}
+.primary{background:#2563eb}.danger{background:#dc2626}
+.notice{margin:24px auto 0;max-width:650px;display:flex;gap:10px;align-items:center;background:#172033;border-radius:12px;padding:12px;color:#cbd5e1}
+.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin:18px 0}
+.metric{padding:18px}.metric span{color:#94a3b8}.metric strong{display:block;font-size:30px;margin-top:6px}
+.layer-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:18px 0}
+.layer-card{padding:16px}.layer-card span{display:block;color:#94a3b8;margin-top:6px}
+.table-wrap{overflow:auto}
+table{width:100%;border-collapse:collapse}
+th,td{padding:13px;text-align:right;border-bottom:1px solid #243244}
+th{color:#94a3b8}
+.map-placeholder{min-height:300px;display:grid;place-items:center;align-content:center;text-align:center;color:#94a3b8}
+.map-placeholder strong{color:#e5e7eb;margin-top:10px}
+@media(max-width:760px){
+  .metrics,.layer-grid{grid-template-columns:repeat(2,1fr)}
+  .topbar{align-items:flex-start;flex-direction:column}
+  .hero{padding:24px 16px}
+}

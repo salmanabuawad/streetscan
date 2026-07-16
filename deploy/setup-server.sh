@@ -73,18 +73,20 @@ systemctl enable streetscan-api streetscan-worker
 systemctl restart streetscan-api
 systemctl restart streetscan-worker
 
-echo "== nginx =="
-cp $DEPLOY_ROOT/deploy/nginx/streetscan.conf /etc/nginx/sites-available/$DOMAIN
+echo "== nginx + tls =="
+if [ ! -d /etc/letsencrypt/live/$DOMAIN ]; then
+    # First run: bootstrap on port 80 only, obtain the certificate, then
+    # install the canonical TLS vhost (never leave certbot's edits in place —
+    # the next deploy would overwrite them).
+    cp $DEPLOY_ROOT/deploy/nginx/streetscan.conf /etc/nginx/sites-available/$DOMAIN
+    ln -sf /etc/nginx/sites-available/$DOMAIN /etc/nginx/sites-enabled/$DOMAIN
+    nginx -t && systemctl reload nginx
+    certbot --nginx -d $DOMAIN --non-interactive --agree-tos -m salman.abuawad@gmail.com --redirect
+fi
+cp $DEPLOY_ROOT/deploy/nginx/streetscan-tls.conf /etc/nginx/sites-available/$DOMAIN
 ln -sf /etc/nginx/sites-available/$DOMAIN /etc/nginx/sites-enabled/$DOMAIN
 nginx -t
 systemctl reload nginx
-
-echo "== tls =="
-if [ ! -d /etc/letsencrypt/live/$DOMAIN ]; then
-    certbot --nginx -d $DOMAIN --non-interactive --agree-tos -m salman.abuawad@gmail.com --redirect
-else
-    echo "certificate already present"
-fi
 
 echo "== health check =="
 sleep 2

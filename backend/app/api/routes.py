@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.db.session import get_db
 from app.models.entities import Route, GPSPoint, VideoSegment, Asset, Detection, Ticket, DetectionStatus, InfrastructureLayer
-from app.schemas.common import RouteCreate, RouteOut, GPSPointCreate, AssetCreate, AssetOut, DetectionOut, TicketCreate, TicketOut
+from app.schemas.common import RouteCreate, RouteOut, GPSPointCreate, AssetCreate, AssetOut, DetectionOut, TicketCreate, TicketOut, SegmentOut
 
 router = APIRouter()
 
@@ -103,6 +103,26 @@ async def upload_video_segment(
     db.commit()
     db.refresh(segment)
     return {"id": segment.id, "filename": filename, "size_bytes": len(content)}
+
+@router.get("/routes/{route_id}/segments", response_model=list[SegmentOut])
+def list_route_segments(route_id: int, db: Session = Depends(get_db)):
+    if not db.get(Route, route_id):
+        raise HTTPException(404, "Route not found")
+    return db.scalars(
+        select(VideoSegment).where(VideoSegment.route_id == route_id)
+        .order_by(VideoSegment.captured_at)
+    ).all()
+
+@router.get("/video-segments/{segment_id}/stream")
+def stream_video_segment(segment_id: int, db: Session = Depends(get_db)):
+    segment = db.get(VideoSegment, segment_id)
+    if not segment:
+        raise HTTPException(404, "Segment not found")
+    path = Path(segment.filename)
+    if not path.is_file():
+        raise HTTPException(404, "Video file missing")
+    # FileResponse handles Range requests, so <video> seeking works.
+    return FileResponse(path, media_type=segment.mime_type or "video/webm")
 
 @router.post("/assets", response_model=AssetOut)
 def create_asset(payload: AssetCreate, db: Session = Depends(get_db)):

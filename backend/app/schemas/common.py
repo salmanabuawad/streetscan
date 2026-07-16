@@ -23,6 +23,16 @@ class GPSPointCreate(BaseModel):
     speed_mps: float | None = None
     captured_at: datetime | None = None
 
+class SegmentOut(BaseModel):
+    id: int
+    route_id: int
+    mime_type: str
+    size_bytes: int
+    captured_at: datetime
+    processed: bool
+    orientation_hint: int
+    model_config = ConfigDict(from_attributes=True)
+
 class AssetCreate(BaseModel):
     external_id: str | None = None
     name: str

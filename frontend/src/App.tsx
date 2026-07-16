@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Camera, MapPin, Database, Route as RouteIcon, UploadCloud, StopCircle, PlayCircle, ScanSearch, Check, X } from 'lucide-react';
+import { Camera, MapPin, Database, Route as RouteIcon, UploadCloud, StopCircle, PlayCircle, ScanSearch, Check, X, Film } from 'lucide-react';
 import { api, API_URL } from './services/api';
 import { queueSegment, queueGpsPoint, pendingCounts, startAutoFlush } from './services/offlineQueue';
 
@@ -29,16 +29,37 @@ const assetTypeLabels: Record<string,string> = {
 };
 const statusLabels: Record<string,string> = { draft:'ממתין לאישור', approved:'אושר', rejected:'נדחה' };
 
+type RouteInfo = {
+  id:number; vehicle_name:string; driver_name?:string;
+  started_at:string; ended_at?:string; active:boolean;
+};
+type Segment = {
+  id:number; route_id:number; mime_type:string; size_bytes:number;
+  captured_at:string; processed:boolean; orientation_hint:number;
+};
+
+function fmtTime(iso: string) {
+  return new Date(iso.endsWith('Z') ? iso : iso + 'Z').toLocaleString('he-IL', {
+    day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit'
+  });
+}
+function fmtSize(bytes: number) {
+  return bytes > 1048576 ? `${(bytes/1048576).toFixed(1)}MB` : `${Math.round(bytes/1024)}KB`;
+}
+
 const layerLabels: Record<string,string> = {
   telecom:'תקשורת וטלפוניה', electricity:'חשמל', water:'מים', sewage:'ביוב',
   drainage:'ניקוז', tunnel:'תעלות ומעברים', road:'כבישים', public_space:'מרחב ציבורי'
 };
 
 export default function App() {
-  const [tab, setTab] = useState<'record'|'detections'|'assets'|'dashboard'>('record');
+  const [tab, setTab] = useState<'record'|'videos'|'detections'|'assets'|'dashboard'>('record');
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
   const [assets, setAssets] = useState<Asset[]>([]);
   const [detections, setDetections] = useState<Detection[]>([]);
+  const [routes, setRoutes] = useState<RouteInfo[]>([]);
+  const [selectedRoute, setSelectedRoute] = useState<number | null>(null);
+  const [segments, setSegments] = useState<Segment[]>([]);
   const [routeId, setRouteId] = useState<number | null>(null);
   const [recording, setRecording] = useState(false);
   const [status, setStatus] = useState('מוכן');
@@ -59,6 +80,16 @@ export default function App() {
   async function decideDetection(id: number, action: 'approve'|'reject') {
     await api(`/detections/${id}/${action}`, {method:'POST'});
     refresh();
+  }
+
+  async function openVideos() {
+    setTab('videos');
+    setRoutes(await api<RouteInfo[]>('/routes'));
+  }
+
+  async function selectRoute(id: number) {
+    setSelectedRoute(id);
+    setSegments(await api<Segment[]>(`/routes/${id}/segments`));
   }
 
   async function refreshPending() {
@@ -188,6 +219,7 @@ export default function App() {
 
     <nav className="tabs">
       <button onClick={()=>setTab('record')} className={tab==='record'?'active':''}><Camera size={18}/> הקלטה</button>
+      <button onClick={openVideos} className={tab==='videos'?'active':''}><Film size={18}/> וידאו</button>
       <button onClick={()=>setTab('detections')} className={tab==='detections'?'active':''}>
         <ScanSearch size={18}/> זיהויים
         {detections.filter(d=>d.status==='draft').length > 0 && ` (${detections.filter(d=>d.status==='draft').length})`}
@@ -215,6 +247,37 @@ export default function App() {
             {(pending.segments > 0 || pending.gps > 0) && ` ממתינים להעלאה: ${pending.segments} מקטעים, ${pending.gps} נקודות GPS.`}
           </span>
         </div>
+      </section>}
+
+      {tab==='videos' && <section>
+        <div className="section-head"><div>
+          <h2>וידאו מסלולים</h2>
+          <p>צפייה במקטעי הווידאו שהועלו מהשטח, לפי מסלול.</p>
+        </div></div>
+        {!routes.length && <div className="empty-note">אין עדיין מסלולים מוקלטים.</div>}
+        <div className="route-list">
+          {routes.map(r => <button key={r.id}
+            className={`route-item ${selectedRoute===r.id?'active':''}`}
+            onClick={()=>selectRoute(r.id)}>
+            <strong>מסלול {r.id}</strong>
+            <span>{r.vehicle_name}{r.driver_name ? ` · ${r.driver_name}` : ''}</span>
+            <span>{fmtTime(r.started_at)}</span>
+            {r.active && <span className="chip draft">פעיל</span>}
+          </button>)}
+        </div>
+        {selectedRoute !== null && (segments.length
+          ? <div className="video-grid">
+              {segments.map(s => <div className="video-card" key={s.id}>
+                <video controls preload="metadata" playsInline
+                  src={`${API_URL}/video-segments/${s.id}/stream`}/>
+                <div className="video-meta">
+                  <span>{fmtTime(s.captured_at)}</span>
+                  <span>{fmtSize(s.size_bytes)}</span>
+                  <span className={`chip ${s.processed?'approved':'draft'}`}>{s.processed?'עובד ב־AI':'בתור לעיבוד'}</span>
+                </div>
+              </div>)}
+            </div>
+          : <div className="empty-note">אין מקטעי וידאו במסלול הזה.</div>)}
       </section>}
 
       {tab==='detections' && <section>

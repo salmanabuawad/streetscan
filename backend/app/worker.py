@@ -125,11 +125,23 @@ def open_capture(path: str) -> tuple[cv2.VideoCapture, int | None]:
     return cap, rotate_code
 
 
+# screen.orientation.angle -> cv2 rotation that uprights the frame.
+# angle 90 = device rotated counterclockwise, so content sits clockwise
+# in the fixed buffer and needs a counterclockwise correction.
+HINT_ROTATE = {
+    90: cv2.ROTATE_90_COUNTERCLOCKWISE,
+    180: cv2.ROTATE_180,
+    270: cv2.ROTATE_90_CLOCKWISE,
+}
+
+
 def process_segment(db, segment: VideoSegment, detector) -> int:
     cap, rotate_code = open_capture(segment.filename)
     if not cap.isOpened():
         log.warning("cannot open segment %s (%s)", segment.id, segment.filename)
         return 0
+    if rotate_code is None and segment.orientation_hint:
+        rotate_code = HINT_ROTATE.get(segment.orientation_hint)
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     if fps <= 0:
         fps = 30.0

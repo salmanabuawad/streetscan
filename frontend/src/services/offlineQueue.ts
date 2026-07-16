@@ -9,7 +9,7 @@ const DB_VERSION = 1;
 const SEGMENTS = 'pending_segments';
 const GPS = 'pending_gps';
 
-type PendingSegment = { id?: number; routeId: number; capturedAt: string; blob: Blob; filename: string };
+type PendingSegment = { id?: number; routeId: number; capturedAt: string; blob: Blob; filename: string; orientation?: number };
 type PendingGps = { id?: number; body: string };
 
 function openDb(): Promise<IDBDatabase> {
@@ -34,8 +34,8 @@ function tx<T>(storeName: string, mode: IDBTransactionMode, run: (store: IDBObje
   }));
 }
 
-export function queueSegment(routeId: number, capturedAt: string, blob: Blob, filename: string): Promise<unknown> {
-  return tx(SEGMENTS, 'readwrite', s => s.add({ routeId, capturedAt, blob, filename }));
+export function queueSegment(routeId: number, capturedAt: string, blob: Blob, filename: string, orientation: number): Promise<unknown> {
+  return tx(SEGMENTS, 'readwrite', s => s.add({ routeId, capturedAt, blob, filename, orientation }));
 }
 
 export function queueGpsPoint(body: object): Promise<unknown> {
@@ -54,6 +54,7 @@ async function uploadSegment(item: PendingSegment): Promise<void> {
   const fd = new FormData();
   fd.append('route_id', String(item.routeId));
   fd.append('captured_at', item.capturedAt);
+  fd.append('orientation', String(item.orientation ?? 0));
   fd.append('file', item.blob, item.filename);
   const res = await fetch(`${API_URL}/video-segments`, { method: 'POST', body: fd });
   if (!res.ok) throw new Error(`upload failed: ${res.status}`);

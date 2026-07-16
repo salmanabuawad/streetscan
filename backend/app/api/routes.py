@@ -74,6 +74,7 @@ def add_gps_point(payload: GPSPointCreate, db: Session = Depends(get_db)):
 async def upload_video_segment(
     route_id: int = Form(...),
     captured_at: str | None = Form(None),
+    orientation: int = Form(0),
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
 ):
@@ -96,6 +97,7 @@ async def upload_video_segment(
         mime_type=file.content_type or "video/webm",
         size_bytes=len(content),
         captured_at=parse_client_timestamp(captured_at),
+        orientation_hint=orientation if orientation in (0, 90, 180, 270) else 0,
     )
     db.add(segment)
     db.commit()

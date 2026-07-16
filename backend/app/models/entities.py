@@ -57,6 +57,10 @@ class VideoSegment(Base):
     size_bytes: Mapped[int] = mapped_column(Integer)
     captured_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     processed: Mapped[bool] = mapped_column(Boolean, default=False)
+    # screen.orientation.angle at record time (0/90/180/270). Phone browsers
+    # keep the camera buffer orientation fixed while the device rotates, so
+    # the worker needs this hint to upright the frames before inference.
+    orientation_hint: Mapped[int] = mapped_column(Integer, default=0)
     route: Mapped["Route"] = relationship(back_populates="video_segments")
 
 class Asset(Base):

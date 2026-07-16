@@ -61,6 +61,10 @@ else
     [ "$DB_EXISTS" = "1" ] || sudo -u postgres psql -c "CREATE DATABASE $DB_NAME OWNER $DB_USER"
 fi
 
+echo "== schema migrations =="
+# create_all only creates missing tables; columns added later need ALTERs here.
+sudo -u postgres psql $DB_NAME -c "ALTER TABLE IF EXISTS video_segments ADD COLUMN IF NOT EXISTS orientation_hint INTEGER NOT NULL DEFAULT 0"
+
 echo "== permissions =="
 mkdir -p $DEPLOY_ROOT/backend/uploads
 chown -R $APP_USER:$APP_USER $DEPLOY_ROOT

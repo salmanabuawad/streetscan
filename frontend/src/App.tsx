@@ -71,20 +71,21 @@ export default function App() {
     return startAutoFlush(() => refreshPending());
   }, []);
 
-  async function uploadOrQueueSegment(routeId: number, blob: Blob, mimeType: string) {
+  async function uploadOrQueueSegment(routeId: number, blob: Blob, mimeType: string, orientation: number) {
     const capturedAt = new Date().toISOString();
     const ext = mimeType.includes('mp4') ? 'mp4' : 'webm';
     const filename = `segment-${Date.now()}.${ext}`;
     const fd = new FormData();
     fd.append('route_id', String(routeId));
     fd.append('captured_at', capturedAt);
+    fd.append('orientation', String(orientation));
     fd.append('file', blob, filename);
     try {
       const res = await fetch(`${API_URL}/video-segments`, { method:'POST', body:fd });
       if (!res.ok) throw new Error(String(res.status));
       if (recordingRef.current) setStatus('מקליט ומעלה לשרת');
     } catch {
-      await queueSegment(routeId, capturedAt, blob, filename).catch(console.error);
+      await queueSegment(routeId, capturedAt, blob, filename, orientation).catch(console.error);
       refreshPending();
       if (recordingRef.current) setStatus('אין חיבור — המקטע נשמר בדפדפן ויעלה אוטומטית');
     }
@@ -97,11 +98,14 @@ export default function App() {
     if (!recordingRef.current || !stream.active) return;
     const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
     mediaRecorder.current = recorder;
+    // Camera buffers keep their orientation while the phone rotates, so
+    // remember how the device is held during this segment.
+    const orientation = (screen.orientation && screen.orientation.angle) || 0;
     const chunks: Blob[] = [];
     recorder.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
     recorder.onstop = () => {
       if (chunks.length) {
-        uploadOrQueueSegment(routeId, new Blob(chunks, { type: mimeType || 'video/webm' }), mimeType);
+        uploadOrQueueSegment(routeId, new Blob(chunks, { type: mimeType || 'video/webm' }), mimeType, orientation);
       }
       recordNextSegment(stream, routeId, mimeType);
     };

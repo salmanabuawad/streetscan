@@ -3,7 +3,7 @@ from pathlib import Path
 import uuid
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
 from fastapi.responses import FileResponse
-from sqlalchemy import select, func
+from sqlalchemy import select, func, update
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -123,6 +123,42 @@ def stream_video_segment(segment_id: int, db: Session = Depends(get_db)):
         raise HTTPException(404, "Video file missing")
     # FileResponse handles Range requests, so <video> seeking works.
     return FileResponse(path, media_type=segment.mime_type or "video/webm")
+
+@router.delete("/video-segments/{segment_id}")
+def delete_video_segment(segment_id: int, db: Session = Depends(get_db)):
+    segment = db.get(VideoSegment, segment_id)
+    if not segment:
+        raise HTTPException(404, "Segment not found")
+    # Detections stay (they may already be approved assets); just unlink.
+    db.execute(update(Detection).where(Detection.video_segment_id == segment_id)
+               .values(video_segment_id=None))
+    Path(segment.filename).unlink(missing_ok=True)
+    db.delete(segment)
+    db.commit()
+    return {"deleted": segment_id}
+
+@router.delete("/routes/{route_id}")
+def delete_route(route_id: int, db: Session = Depends(get_db)):
+    route = db.get(Route, route_id)
+    if not route:
+        raise HTTPException(404, "Route not found")
+    if route.active:
+        raise HTTPException(400, "Stop the route before deleting it")
+    segment_ids = db.scalars(
+        select(VideoSegment.id).where(VideoSegment.route_id == route_id)
+    ).all()
+    if segment_ids:
+        db.execute(update(Detection).where(Detection.video_segment_id.in_(segment_ids))
+                   .values(video_segment_id=None))
+    db.execute(update(Detection).where(Detection.route_id == route_id)
+               .values(route_id=None))
+    for filename in db.scalars(
+        select(VideoSegment.filename).where(VideoSegment.route_id == route_id)
+    ):
+        Path(filename).unlink(missing_ok=True)
+    db.delete(route)  # cascades gps_points + video_segments
+    db.commit()
+    return {"deleted": route_id, "segments_deleted": len(segment_ids)}
 
 @router.post("/assets", response_model=AssetOut)
 def create_asset(payload: AssetCreate, db: Session = Depends(get_db)):

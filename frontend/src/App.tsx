@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Camera, MapPin, Database, Route as RouteIcon, UploadCloud, StopCircle, PlayCircle, ScanSearch, Check, X, Film } from 'lucide-react';
+import { Camera, MapPin, Database, Route as RouteIcon, UploadCloud, StopCircle, PlayCircle, ScanSearch, Check, X, Film, Trash2 } from 'lucide-react';
 import { api, API_URL } from './services/api';
 import { queueSegment, queueGpsPoint, pendingCounts, startAutoFlush } from './services/offlineQueue';
 
@@ -90,6 +90,26 @@ export default function App() {
   async function selectRoute(id: number) {
     setSelectedRoute(id);
     setSegments(await api<Segment[]>(`/routes/${id}/segments`));
+  }
+
+  async function deleteSegment(id: number) {
+    if (!window.confirm('למחוק את מקטע הווידאו הזה? הקובץ יימחק מהשרת לצמיתות.')) return;
+    await api(`/video-segments/${id}`, {method:'DELETE'});
+    setSegments(s => s.filter(x => x.id !== id));
+    refresh();
+  }
+
+  async function deleteRoute(id: number) {
+    if (!window.confirm(`למחוק את מסלול ${id} על כל מקטעי הווידאו ונקודות ה־GPS שלו? פעולה בלתי הפיכה.`)) return;
+    try {
+      await api(`/routes/${id}`, {method:'DELETE'});
+      setSelectedRoute(null);
+      setSegments([]);
+      setRoutes(await api<RouteInfo[]>('/routes'));
+      refresh();
+    } catch (e) {
+      alert(String(e).includes('Stop the route') ? 'המסלול עדיין פעיל — עצור אותו קודם.' : `שגיאה: ${String(e)}`);
+    }
   }
 
   async function refreshPending() {
@@ -271,6 +291,11 @@ export default function App() {
             {r.active && <span className="chip draft">פעיל</span>}
           </button>)}
         </div>
+        {selectedRoute !== null && <div className="route-actions">
+          <button className="delete-route" onClick={()=>deleteRoute(selectedRoute)}>
+            <Trash2 size={15}/> מחק מסלול {selectedRoute} ({segments.length} מקטעים)
+          </button>
+        </div>}
         {selectedRoute !== null && (segments.length
           ? <div className="video-grid">
               {segments.map(s => <div className="video-card" key={s.id}>
@@ -280,6 +305,7 @@ export default function App() {
                   <span>{fmtTime(s.captured_at)}</span>
                   <span>{fmtSize(s.size_bytes)}</span>
                   <span className={`chip ${s.processed?'approved':'draft'}`}>{s.processed?'עובד ב־AI':'בתור לעיבוד'}</span>
+                  <button className="icon-danger" title="מחק מקטע" onClick={()=>deleteSegment(s.id)}><Trash2 size={16}/></button>
                 </div>
               </div>)}
             </div>

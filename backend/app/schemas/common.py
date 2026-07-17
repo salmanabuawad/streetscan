@@ -104,6 +104,26 @@ class DetectionOut(BaseModel):
     created_at: datetime
     model_config = ConfigDict(from_attributes=True)
 
+class BusinessOut(BaseModel):
+    id: int
+    route_id: int | None
+    image_id: int | None
+    name: str
+    category: str
+    ocr_text: str | None
+    languages: str | None
+    confidence: float
+    latitude: float | None
+    longitude: float | None
+    status: DetectionStatus
+    snapshot_path: str | None
+    created_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
+class BusinessEdit(BaseModel):
+    name: str | None = None
+    category: str | None = None
+
 class TicketCreate(BaseModel):
     title: str
     description: str | None = None

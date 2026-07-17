@@ -11,12 +11,13 @@ from app.core.security import verify_password, hash_password, create_token
 from app.db.session import get_db
 from app.api.deps import get_current_user, require_role
 from app.models.entities import (
-    Route, GPSPoint, VideoSegment, CapturedImage, Asset, Detection, Ticket,
+    Route, GPSPoint, VideoSegment, CapturedImage, Asset, Detection, Ticket, Business,
     DetectionStatus, InfrastructureLayer, User, UserRole,
 )
 from app.schemas.common import (
     RouteCreate, RouteOut, GPSPointCreate, AssetCreate, AssetOut, DetectionOut,
     TicketCreate, TicketOut, SegmentOut, ImageOut, LoginIn, LoginOut, UserCreate, UserOut,
+    BusinessOut, BusinessEdit,
 )
 
 router = APIRouter()
@@ -356,6 +357,59 @@ def create_ticket(payload: TicketCreate, db: Session = Depends(get_db)):
 def list_tickets(db: Session = Depends(get_db)):
     return db.scalars(select(Ticket).order_by(Ticket.created_at.desc()).limit(500)).all()
 
+@router.get("/businesses", response_model=list[BusinessOut], dependencies=[DRIVER])
+def list_businesses(status: str | None = None, db: Session = Depends(get_db)):
+    stmt = select(Business).order_by(Business.created_at.desc())
+    if status:
+        try:
+            stmt = stmt.where(Business.status == DetectionStatus(status))
+        except ValueError:
+            raise HTTPException(400, f"Unknown status '{status}'")
+    return db.scalars(stmt.limit(1000)).all()
+
+@router.get("/businesses/{business_id}/snapshot", dependencies=[DRIVER])
+def business_snapshot(business_id: int, db: Session = Depends(get_db)):
+    biz = db.get(Business, business_id)
+    if not biz or not biz.snapshot_path:
+        raise HTTPException(404, "Snapshot not found")
+    path = Path(biz.snapshot_path)
+    if not path.is_file():
+        raise HTTPException(404, "Snapshot file missing")
+    return FileResponse(path, media_type="image/jpeg")
+
+@router.patch("/businesses/{business_id}", response_model=BusinessOut, dependencies=[VALIDATOR])
+def edit_business(business_id: int, payload: BusinessEdit, db: Session = Depends(get_db)):
+    biz = db.get(Business, business_id)
+    if not biz:
+        raise HTTPException(404, "Business not found")
+    if payload.name is not None:
+        biz.name = payload.name
+    if payload.category is not None:
+        biz.category = payload.category
+    db.commit()
+    db.refresh(biz)
+    return biz
+
+@router.post("/businesses/{business_id}/approve", response_model=BusinessOut, dependencies=[VALIDATOR])
+def approve_business(business_id: int, db: Session = Depends(get_db)):
+    biz = db.get(Business, business_id)
+    if not biz:
+        raise HTTPException(404, "Business not found")
+    biz.status = DetectionStatus.APPROVED
+    db.commit()
+    db.refresh(biz)
+    return biz
+
+@router.post("/businesses/{business_id}/reject", response_model=BusinessOut, dependencies=[VALIDATOR])
+def reject_business(business_id: int, db: Session = Depends(get_db)):
+    biz = db.get(Business, business_id)
+    if not biz:
+        raise HTTPException(404, "Business not found")
+    biz.status = DetectionStatus.REJECTED
+    db.commit()
+    db.refresh(biz)
+    return biz
+
 @router.get("/map-data", dependencies=[DRIVER])
 def map_data(db: Session = Depends(get_db)):
     """Everything the GIS map needs in one call: located assets, located
@@ -367,6 +421,10 @@ def map_data(db: Session = Depends(get_db)):
     detections = db.scalars(
         select(Detection).where(Detection.latitude.is_not(None), Detection.longitude.is_not(None))
         .order_by(Detection.id).limit(2000)
+    ).all()
+    businesses = db.scalars(
+        select(Business).where(Business.latitude.is_not(None), Business.longitude.is_not(None))
+        .order_by(Business.id).limit(2000)
     ).all()
     routes = db.scalars(select(Route).order_by(Route.id.desc()).limit(20)).all()
     tracks = []
@@ -392,6 +450,11 @@ def map_data(db: Session = Depends(get_db)):
             "confidence": d.confidence, "status": d.status.value,
             "lat": d.latitude, "lng": d.longitude,
         } for d in detections],
+        "businesses": [{
+            "id": b.id, "name": b.name, "category": b.category,
+            "confidence": b.confidence, "status": b.status.value,
+            "lat": b.latitude, "lng": b.longitude,
+        } for b in businesses],
         "tracks": tracks,
     }
 
@@ -401,11 +464,13 @@ def dashboard(db: Session = Depends(get_db)):
     route_count = db.scalar(select(func.count()).select_from(Route)) or 0
     detection_count = db.scalar(select(func.count()).select_from(Detection)) or 0
     ticket_count = db.scalar(select(func.count()).select_from(Ticket)) or 0
+    business_count = db.scalar(select(func.count()).select_from(Business)) or 0
     return {
         "assets": asset_count,
         "routes": route_count,
         "detections": detection_count,
         "tickets": ticket_count,
+        "businesses": business_count,
         "layers": [
             "telecom", "electricity", "water", "sewage",
             "drainage", "tunnel", "road", "public_space"

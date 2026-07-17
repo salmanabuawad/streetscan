@@ -2,3 +2,6 @@
 #   pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 ultralytics>=8.3,<9
 opencv-python-headless>=4.8
+# OCR: Tesseract (heb+ara+eng) — light (~64MB, no torch), install the engine
+# and language packs via apt (see setup-server.sh).
+pytesseract>=0.3.10

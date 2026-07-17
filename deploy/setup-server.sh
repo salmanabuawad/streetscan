@@ -30,6 +30,8 @@ cd $DEPLOY_ROOT/backend
 echo "== ai worker deps =="
 # opencv needs these even in a headless install path (ultralytics pulls opencv-python)
 apt-get install -y -q libgl1 libglib2.0-0 >/dev/null
+# Tesseract OCR engine + Hebrew/Arabic/English language packs (business signs)
+apt-get install -y -q tesseract-ocr tesseract-ocr-heb tesseract-ocr-ara tesseract-ocr-eng >/dev/null
 if ! .venv/bin/python -c "import ultralytics" 2>/dev/null; then
     .venv/bin/pip install -q torch torchvision --index-url https://download.pytorch.org/whl/cpu
     .venv/bin/pip install -q -r requirements-ai.txt
@@ -68,6 +70,7 @@ echo "== schema migrations =="
 # create_all only creates missing tables; columns added later need ALTERs here.
 sudo -u postgres psql $DB_NAME -c "ALTER TABLE IF EXISTS video_segments ADD COLUMN IF NOT EXISTS orientation_hint INTEGER NOT NULL DEFAULT 0"
 sudo -u postgres psql $DB_NAME -c "ALTER TABLE IF EXISTS gps_points ADD COLUMN IF NOT EXISTS heading_deg DOUBLE PRECISION"
+sudo -u postgres psql $DB_NAME -c "ALTER TABLE IF EXISTS captured_images ADD COLUMN IF NOT EXISTS ocr_processed BOOLEAN NOT NULL DEFAULT FALSE"
 sudo -u postgres psql $DB_NAME -c "ALTER TABLE IF EXISTS detections ADD COLUMN IF NOT EXISTS image_id INTEGER REFERENCES captured_images(id)" 2>/dev/null || true
 
 echo "== permissions =="

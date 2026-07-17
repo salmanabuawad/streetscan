@@ -94,7 +94,8 @@ class CapturedImage(Base):
     speed_mps: Mapped[float | None] = mapped_column(Float, nullable=True)
     kind: Mapped[str] = mapped_column(String(30), default="interval")  # interval | stop_burst | manual
     blur_score: Mapped[float | None] = mapped_column(Float, nullable=True)
-    processed: Mapped[bool] = mapped_column(Boolean, default=False)
+    processed: Mapped[bool] = mapped_column(Boolean, default=False)       # YOLO
+    ocr_processed: Mapped[bool] = mapped_column(Boolean, default=False)   # Tesseract
 
 class Asset(Base):
     __tablename__ = "assets"
@@ -124,6 +125,25 @@ class Detection(Base):
     longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
     status: Mapped[DetectionStatus] = mapped_column(Enum(DetectionStatus), default=DetectionStatus.DRAFT)
     snapshot_path: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+class Business(Base):
+    """A storefront/business recognized from a sign via OCR, pending validation.
+    Approved businesses become part of the municipal point-of-interest layer."""
+    __tablename__ = "businesses"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    route_id: Mapped[int | None] = mapped_column(ForeignKey("routes.id"), nullable=True)
+    image_id: Mapped[int | None] = mapped_column(ForeignKey("captured_images.id"), nullable=True)
+    name: Mapped[str] = mapped_column(String(200))
+    category: Mapped[str] = mapped_column(String(80), default="unknown")
+    ocr_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    languages: Mapped[str | None] = mapped_column(String(40), nullable=True)  # e.g. "ar,he"
+    confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    heading_deg: Mapped[float | None] = mapped_column(Float, nullable=True)
+    snapshot_path: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    status: Mapped[DetectionStatus] = mapped_column(Enum(DetectionStatus), default=DetectionStatus.DRAFT)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 class Ticket(Base):

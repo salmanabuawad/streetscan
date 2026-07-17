@@ -20,7 +20,8 @@ from sqlalchemy import select
 
 from app.core.config import settings
 from app.db.session import SessionLocal
-from app.models.entities import VideoSegment, CapturedImage, GPSPoint, Detection, InfrastructureLayer
+from app.models.entities import VideoSegment, CapturedImage, GPSPoint, Detection, Business, InfrastructureLayer
+from app import ocr as ocr_mod
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 log = logging.getLogger("streetscan.worker")
@@ -251,7 +252,48 @@ def run_once(detector) -> int:
                 log.exception("image %s failed; skipping", image.id)
             image.processed = True
             db.commit()
+
+        # OCR pass: read storefront signs into draft businesses.
+        for image in db.scalars(
+            select(CapturedImage).where(CapturedImage.ocr_processed.is_(False))
+            .order_by(CapturedImage.id).limit(50)
+        ).all():
+            try:
+                n = process_image_ocr(db, image)
+                if n:
+                    log.info("image %s -> %d business drafts", image.id, n)
+            except Exception:
+                log.exception("ocr on image %s failed; skipping", image.id)
+            image.ocr_processed = True
+            db.commit()
     return total
+
+
+def process_image_ocr(db, image: CapturedImage) -> int:
+    result = ocr_mod.run_ocr(image.filename)
+    if not result:
+        return 0
+    snapshot = None
+    frame = cv2.imread(image.filename)
+    if frame is not None:
+        snap_dir = Path(settings.upload_dir) / "snapshots"
+        snap_dir.mkdir(parents=True, exist_ok=True)
+        snapshot = str(snap_dir / f"biz_{uuid.uuid4().hex}.jpg")
+        cv2.imwrite(snapshot, frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+    db.add(Business(
+        route_id=image.route_id,
+        image_id=image.id,
+        name=result["name"],
+        category=result["category"],
+        ocr_text=result["text"],
+        languages=result["languages"],
+        confidence=result["confidence"],
+        latitude=image.latitude,
+        longitude=image.longitude,
+        heading_deg=image.heading_deg,
+        snapshot_path=snapshot,
+    ))
+    return 1
 
 
 def main():

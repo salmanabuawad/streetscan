@@ -17,7 +17,7 @@ from app.models.entities import (
 from app.schemas.common import (
     RouteCreate, RouteOut, GPSPointCreate, AssetCreate, AssetOut, DetectionOut,
     TicketCreate, TicketOut, SegmentOut, ImageOut, LoginIn, LoginOut, UserCreate, UserOut,
-    BusinessOut, BusinessEdit, TrainingSampleOut,
+    BusinessOut, BusinessEdit, TrainingSampleOut, BBoxIn,
 )
 
 router = APIRouter()
@@ -451,6 +451,24 @@ def training_summary(db: Session = Depends(get_db)):
         select(TrainingSample.asset_type, func.count()).group_by(TrainingSample.asset_type)
     ).all()
     return {"total": sum(c for _, c in rows), "by_type": {t: c for t, c in rows}}
+
+@router.patch("/training-samples/{sample_id}", response_model=TrainingSampleOut, dependencies=[DRIVER])
+def edit_training_sample(sample_id: int, payload: BBoxIn, db: Session = Depends(get_db),
+                         user: User = Depends(get_current_user)):
+    sample = db.get(TrainingSample, sample_id)
+    if not sample:
+        raise HTTPException(404, "Sample not found")
+    if sample.uploaded_by != user.id and ROLE_RANK[user.role.value] < ROLE_RANK["validator"]:
+        raise HTTPException(403, "Can only edit your own samples")
+    sample.bbox_cx, sample.bbox_cy = payload.bbox_cx, payload.bbox_cy
+    sample.bbox_w, sample.bbox_h = payload.bbox_w, payload.bbox_h
+    if payload.asset_type:
+        sample.asset_type = payload.asset_type
+    if payload.asset_name is not None:
+        sample.asset_name = payload.asset_name
+    db.commit()
+    db.refresh(sample)
+    return sample
 
 @router.get("/training-samples/{sample_id}/file", dependencies=[DRIVER])
 def training_sample_file(sample_id: int, db: Session = Depends(get_db)):

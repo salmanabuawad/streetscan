@@ -119,6 +119,14 @@ class TrainingSampleOut(BaseModel):
     created_at: datetime
     model_config = ConfigDict(from_attributes=True)
 
+class BBoxIn(BaseModel):
+    bbox_cx: float
+    bbox_cy: float
+    bbox_w: float
+    bbox_h: float
+    asset_type: str | None = None
+    asset_name: str | None = None
+
 class BusinessOut(BaseModel):
     id: int
     route_id: int | None

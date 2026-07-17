@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Camera, MapPin, Database, Route as RouteIcon, UploadCloud, StopCircle, PlayCircle, ScanSearch, Check, X, Film, Trash2, LogOut, Gauge, Compass, BatteryMedium, Wifi, WifiOff, ImageIcon, Store, GraduationCap } from 'lucide-react';
-import { api, getToken, setToken } from './services/api';
+import { api, getToken, setToken, fetchMediaUrl } from './services/api';
 import { queueSegment, queueGpsPoint, queueImage, pendingCounts, startAutoFlush } from './services/offlineQueue';
 import { AuthImg, AuthVideo } from './AuthMedia';
 import Login from './Login';
@@ -150,6 +150,9 @@ export default function App() {
   const [trainFileUrl, setTrainFileUrl] = useState<string | null>(null);
   const [trainBox, setTrainBox] = useState<Box | null>(null);
   const [trainBusy, setTrainBusy] = useState(false);
+  const [editSample, setEditSample] = useState<{id:number;asset_type:string}|null>(null);
+  const [editBox, setEditBox] = useState<Box | null>(null);
+  const [editImgUrl, setEditImgUrl] = useState<string | null>(null);
   const [routes, setRoutes] = useState<RouteInfo[]>([]);
   const [selectedRoute, setSelectedRoute] = useState<number | null>(null);
   const [segments, setSegments] = useState<Segment[]>([]);
@@ -263,6 +266,25 @@ export default function App() {
     } finally {
       setTrainBusy(false);
     }
+  }
+
+  useEffect(() => {
+    if (!editSample) { setEditImgUrl(null); return; }
+    let url: string | null = null, alive = true;
+    fetchMediaUrl(`/training-samples/${editSample.id}/file`).then(u => {
+      if (alive) { url = u; setEditImgUrl(u); } else URL.revokeObjectURL(u);
+    }).catch(() => {});
+    return () => { alive = false; if (url) URL.revokeObjectURL(url); };
+  }, [editSample]);
+
+  async function saveSampleBox() {
+    if (!editSample || !editBox) return;
+    await api(`/training-samples/${editSample.id}`, {
+      method:'PATCH', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ bbox_cx:editBox.cx, bbox_cy:editBox.cy, bbox_w:editBox.w, bbox_h:editBox.h }),
+    });
+    setEditSample(null); setEditBox(null);
+    loadTraining();
   }
 
   async function deleteTrainingSample(id: number) {
@@ -855,9 +877,25 @@ export default function App() {
                       : <span className="chip draft">ללא תיבה</span>}
                     {t.latitude != null ? <span>📍</span> : <span>ללא מיקום</span>}
                   </div>
+                  <button className="link-btn" onClick={()=>{setEditBox(null); setEditSample({id:t.id, asset_type:t.asset_type});}}>
+                    {t.bbox_cx != null ? 'ערוך תיבה' : 'סמן תיבה'}
+                  </button>
                 </div>
               </div>)}
             </div>}
+
+        {editSample && <div className="modal-backdrop" onClick={()=>setEditSample(null)}>
+          <div className="modal" onClick={e=>e.stopPropagation()}>
+            <h3>סימון תיבה — {TRAINING_TYPE_LABEL[editSample.asset_type] || editSample.asset_type}</h3>
+            {editImgUrl
+              ? <BBoxPicker src={editImgUrl} onChange={setEditBox}/>
+              : <div className="media-loading">טוען תמונה...</div>}
+            <div className="modal-actions">
+              <button className="reject" onClick={()=>setEditSample(null)}><X size={16}/> ביטול</button>
+              <button className="approve" disabled={!editBox} onClick={saveSampleBox}><Check size={16}/> שמור תיבה</button>
+            </div>
+          </div>
+        </div>}
       </section>}
 
       {tab==='assets' && <section>

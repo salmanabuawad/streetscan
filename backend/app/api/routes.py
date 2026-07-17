@@ -1,4 +1,4 @@
-﻿from datetime import datetime, timezone
+﻿from datetime import datetime, timezone, timedelta
 from pathlib import Path
 import uuid
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
@@ -595,7 +595,18 @@ def _haversine_km(a: tuple[float, float], b: tuple[float, float]) -> float:
 def overview(db: Session = Depends(get_db)):
     """Rich aggregate for the command-center dashboard."""
     routes = db.scalars(select(Route).order_by(Route.id.desc())).all()
-    active = sum(1 for r in routes if r.active)
+    # "active" = flagged active AND actually moving recently — avoids phantom
+    # live routes left un-stopped when the phone app closed mid-session.
+    cutoff = datetime.utcnow() - timedelta(minutes=20)
+    active = 0
+    for r in routes:
+        if not r.active:
+            continue
+        last_gps = db.scalar(
+            select(func.max(GPSPoint.captured_at)).where(GPSPoint.route_id == r.id)
+        )
+        if (last_gps and last_gps >= cutoff) or (not last_gps and r.started_at >= cutoff):
+            active += 1
 
     # total surveyed distance across all routes (haversine over ordered points)
     distance_km = 0.0

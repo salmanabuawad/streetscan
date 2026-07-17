@@ -1,9 +1,9 @@
-﻿from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 import uuid
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
 from fastapi.responses import FileResponse
-from sqlalchemy import select, func, update
+from sqlalchemy import select, func, update, delete
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -20,7 +20,7 @@ from app.models.entities import (
 from app.schemas.common import (
     RouteCreate, RouteOut, GPSPointCreate, AssetCreate, AssetOut, DetectionOut,
     TicketCreate, TicketOut, SegmentOut, ImageOut, LoginIn, LoginOut, UserCreate, UserOut,
-    BusinessOut, BusinessEdit, TrainingSampleOut, BBoxIn,
+    BusinessOut, BusinessEdit, TrainingSampleOut, BBoxIn, VideoAnnotationIn,
 )
 
 router = APIRouter()
@@ -219,7 +219,7 @@ async def annotate_captured_image(
         filename=str(target),
         asset_name=(payload.asset_name or payload.asset_type).strip(),
         asset_type=payload.asset_type.strip(),
-        layer="other",
+        layer=(payload.layer or "other").strip(),
         latitude=image.latitude, longitude=image.longitude, uploaded_by=user.id,
         bbox_cx=payload.bbox_cx, bbox_cy=payload.bbox_cy,
         bbox_w=payload.bbox_w, bbox_h=payload.bbox_h,
@@ -258,6 +258,85 @@ def delete_image(image_id: int, db: Session = Depends(get_db)):
     db.delete(image)
     db.commit()
     return {"deleted": image_id}
+
+@router.post("/video-segments/{segment_id}/annotate", response_model=TrainingSampleOut, dependencies=[DRIVER])
+def annotate_video_frame(
+    segment_id: int,
+    payload: VideoAnnotationIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Extract the selected video frame and save the user's bounding box as a
+    durable training sample. The label may be an existing category or a new
+    free-text type; model training later treats asset_type as the class key."""
+    segment = db.get(VideoSegment, segment_id)
+    if not segment:
+        raise HTTPException(404, "Video segment not found")
+    source = Path(segment.filename)
+    if not source.is_file():
+        raise HTTPException(404, "Video file missing")
+    if payload.timestamp_s < 0:
+        raise HTTPException(400, "timestamp_s must be non-negative")
+    if not payload.asset_type or not payload.asset_type.strip():
+        raise HTTPException(400, "asset_type required")
+    for value in (payload.bbox_cx, payload.bbox_cy, payload.bbox_w, payload.bbox_h):
+        if value < 0 or value > 1:
+            raise HTTPException(400, "Bounding-box values must be normalized between 0 and 1")
+    if payload.bbox_w <= 0 or payload.bbox_h <= 0:
+        raise HTTPException(400, "Bounding box must have positive width and height")
+
+    try:
+        import cv2
+    except ImportError as exc:
+        raise HTTPException(503, "OpenCV is required for video-frame annotation") from exc
+
+    capture = cv2.VideoCapture(str(source))
+    try:
+        if not capture.isOpened():
+            raise HTTPException(422, "Could not open video segment")
+        duration_ms = capture.get(cv2.CAP_PROP_FRAME_COUNT) / max(capture.get(cv2.CAP_PROP_FPS), 1) * 1000
+        requested_ms = payload.timestamp_s * 1000
+        if duration_ms > 0 and requested_ms > duration_ms + 250:
+            raise HTTPException(400, "Timestamp is outside the video duration")
+        capture.set(cv2.CAP_PROP_POS_MSEC, requested_ms)
+        ok, frame = capture.read()
+        if not ok or frame is None:
+            raise HTTPException(422, "Could not extract the selected frame")
+    finally:
+        capture.release()
+
+    # Apply the phone orientation hint so the saved training frame matches UI view.
+    if segment.orientation_hint == 90:
+        frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+    elif segment.orientation_hint == 180:
+        frame = cv2.rotate(frame, cv2.ROTATE_180)
+    elif segment.orientation_hint == 270:
+        frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+
+    train_dir = Path(settings.upload_dir) / "training" / "video_frames"
+    train_dir.mkdir(parents=True, exist_ok=True)
+    target = train_dir / f"segment_{segment_id}_{int(payload.timestamp_s * 1000)}_{uuid.uuid4().hex}.jpg"
+    if not cv2.imwrite(str(target), frame, [cv2.IMWRITE_JPEG_QUALITY, 95]):
+        raise HTTPException(500, "Failed to save extracted frame")
+
+    metadata = f"source=video;segment_id={segment_id};timestamp_s={payload.timestamp_s:.3f}"
+    if payload.notes:
+        metadata += f";notes={payload.notes.strip()}"
+    sample = TrainingSample(
+        filename=str(target),
+        asset_name=(payload.asset_name or payload.asset_type).strip(),
+        asset_type=payload.asset_type.strip(),
+        layer=(payload.layer or "other").strip(),
+        notes=metadata,
+        uploaded_by=user.id,
+        bbox_cx=payload.bbox_cx, bbox_cy=payload.bbox_cy,
+        bbox_w=payload.bbox_w, bbox_h=payload.bbox_h,
+    )
+    db.add(sample)
+    db.commit()
+    db.refresh(sample)
+    return sample
+
 
 @router.get("/routes/{route_id}/segments", response_model=list[SegmentOut], dependencies=[DRIVER])
 def list_route_segments(route_id: int, db: Session = Depends(get_db)):
@@ -803,11 +882,40 @@ def analyze_route(route_id: int, db: Session = Depends(get_db)):
     over a route's images. Async — the worker picks up openvocab_processed=false."""
     if not db.get(Route, route_id):
         raise HTTPException(404, "Route not found")
-    n = db.execute(update(CapturedImage).where(CapturedImage.route_id == route_id)
-                   .values(openvocab_processed=False)).rowcount
-    job = AnalysisJob(job_type="route", target_route_id=route_id, status="queued", total=n)
-    db.add(job); db.commit(); db.refresh(job)
-    return {"job_id": job.id, "queued_images": n, "note": "worker analyzes asynchronously; poll the job"}
+    # Do not duplicate an active route analysis job.
+    active = db.scalar(select(AnalysisJob).where(
+        AnalysisJob.target_route_id == route_id,
+        AnalysisJob.job_type == "route",
+        AnalysisJob.status.in_(["queued", "running"]),
+    ).order_by(AnalysisJob.id.desc()))
+    if active:
+        return {"job_id": active.id, "queued_images": active.total,
+                "note": "an analysis job is already active for this route"}
+
+    image_count = db.scalar(select(func.count()).select_from(CapturedImage)
+                            .where(CapturedImage.route_id == route_id)) or 0
+    if image_count == 0:
+        raise HTTPException(400, "Route has no captured images")
+
+    # A rerun replaces only unapproved OWL-ViT drafts. Human-approved assets and
+    # their audit trail remain intact.
+    db.execute(delete(CandidateAsset).where(
+        CandidateAsset.route_id == route_id,
+        CandidateAsset.detector_name == "owlvit",
+        CandidateAsset.status.in_([
+            CandidateStatus.PENDING_VALIDATION,
+            CandidateStatus.REJECTED,
+            CandidateStatus.INSUFFICIENT_QUALITY,
+        ]),
+    ))
+    db.execute(update(CapturedImage).where(CapturedImage.route_id == route_id)
+               .values(openvocab_processed=False))
+    job = AnalysisJob(job_type="route", target_route_id=route_id, status="queued", total=image_count)
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    return {"job_id": job.id, "queued_images": image_count,
+            "note": "local worker analyzes asynchronously; poll the job"}
 
 @router.post("/analysis/reprocess", dependencies=[ADMIN])
 def analyze_reprocess(route_id: int | None = None, db: Session = Depends(get_db)):
@@ -834,10 +942,18 @@ def analysis_job(job_id: int, db: Session = Depends(get_db)):
     candidates = db.scalar(select(func.count()).select_from(CandidateAsset)
                            .where(CandidateAsset.route_id == job.target_route_id,
                                   CandidateAsset.detector_name == "owlvit")) or 0
-    status = "done" if remaining == 0 else "running"
+    status = job.status
+    if status not in ("failed", "done"):
+        status = "done" if remaining == 0 else ("running" if processed else "queued")
+        job.status = status
+        job.done = processed
+        job.candidates_created = candidates
+        if status == "done" and job.finished_at is None:
+            job.finished_at = datetime.utcnow()
+        db.commit()
     return {"job_id": job.id, "type": job.job_type, "route_id": job.target_route_id,
             "total": job.total, "processed": processed, "remaining": remaining,
-            "candidates": candidates, "status": status}
+            "candidates": candidates, "status": status, "detail": job.detail}
 
 @router.get("/analysis/results/{image_id}", dependencies=[DRIVER])
 def analysis_results(image_id: int, db: Session = Depends(get_db)):

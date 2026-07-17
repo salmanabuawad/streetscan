@@ -16,13 +16,13 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import cv2
-from sqlalchemy import select
+from sqlalchemy import select, func
 
 from app.core.config import settings
 from app.db.session import SessionLocal
 from app.models.entities import (
     VideoSegment, CapturedImage, GPSPoint, Detection, Business, InfrastructureLayer,
-    AssetCategory, CandidateAsset, CandidateStatus,
+    AssetCategory, CandidateAsset, CandidateStatus, AnalysisJob,
 )
 from app import ocr as ocr_mod
 from app.engine import DefaultAssetAnalysisEngine, CaptureContext, CategoryPrompt
@@ -393,19 +393,76 @@ def run_once(detector) -> int:
             .order_by(CapturedImage.id).limit(5)
         ).all()
         if ov_pending:
+            route_ids = {image.route_id for image in ov_pending}
+            for job in db.scalars(select(AnalysisJob).where(
+                AnalysisJob.job_type == "route",
+                AnalysisJob.target_route_id.in_(route_ids),
+                AnalysisJob.status.in_(["queued", "running"]),
+            )).all():
+                job.status = "running"
+            db.commit()
+
             if _OVENGINE[0] is None:
                 log.info("loading OWL-ViT for on-demand infrastructure detection...")
-                _OVENGINE[0] = build_openvocab_engine(db)
+                try:
+                    _OVENGINE[0] = build_openvocab_engine(db)
+                except Exception as exc:
+                    log.exception("failed loading OWL-ViT")
+                    for job in db.scalars(select(AnalysisJob).where(
+                        AnalysisJob.job_type == "route",
+                        AnalysisJob.target_route_id.in_(route_ids),
+                        AnalysisJob.status.in_(["queued", "running"]),
+                    )).all():
+                        job.status = "failed"
+                        job.detail = f"OWL-ViT load failed: {type(exc).__name__}: {exc}"
+                        job.finished_at = datetime.utcnow()
+                    # Mark this batch processed so a bad model installation does
+                    # not create an endless hot loop. Re-run after fixing deps.
+                    for image in ov_pending:
+                        image.openvocab_processed = True
+                    db.commit()
+                    return total
+
             for image in ov_pending:
                 try:
                     n = process_image_engine(db, image, _OVENGINE[0])
                     if n:
                         log.info("image %s -> %d infrastructure candidates (owlvit)", image.id, n)
                         total += n
-                except Exception:
+                except Exception as exc:
                     log.exception("owlvit analysis on image %s failed; skipping", image.id)
+                    job = db.scalar(select(AnalysisJob).where(
+                        AnalysisJob.job_type == "route",
+                        AnalysisJob.target_route_id == image.route_id,
+                        AnalysisJob.status.in_(["queued", "running"]),
+                    ).order_by(AnalysisJob.id.desc()))
+                    if job:
+                        job.detail = f"Image {image.id} failed: {type(exc).__name__}: {exc}"
                 image.openvocab_processed = True
                 db.commit()
+
+            # Persist progress and close jobs whose route queue is empty.
+            for route_id in route_ids:
+                job = db.scalar(select(AnalysisJob).where(
+                    AnalysisJob.job_type == "route",
+                    AnalysisJob.target_route_id == route_id,
+                    AnalysisJob.status.in_(["queued", "running"]),
+                ).order_by(AnalysisJob.id.desc()))
+                if not job:
+                    continue
+                remaining = db.scalar(select(func.count()).select_from(CapturedImage).where(
+                    CapturedImage.route_id == route_id,
+                    CapturedImage.openvocab_processed.is_(False),
+                )) or 0
+                job.done = max(0, job.total - remaining)
+                job.candidates_created = db.scalar(select(func.count()).select_from(CandidateAsset).where(
+                    CandidateAsset.route_id == route_id,
+                    CandidateAsset.detector_name == "owlvit",
+                )) or 0
+                if remaining == 0:
+                    job.status = "done"
+                    job.finished_at = datetime.utcnow()
+            db.commit()
         elif _OVENGINE[0] is not None:
             import gc
             _OVENGINE[0] = None

@@ -127,6 +127,12 @@ class BBoxIn(BaseModel):
     asset_type: str | None = None
     asset_name: str | None = None
 
+
+class VideoAnnotationIn(BBoxIn):
+    timestamp_s: float
+    layer: str = "other"
+    notes: str | None = None
+
 class BusinessOut(BaseModel):
     id: int
     route_id: int | None

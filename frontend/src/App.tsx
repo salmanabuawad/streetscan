@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Camera, MapPin, Database, Route as RouteIcon, UploadCloud, StopCircle, PlayCircle, ScanSearch, Check, X, Film, Trash2, LogOut, Gauge, Compass, BatteryMedium, Wifi, WifiOff, ImageIcon, Store, GraduationCap, Boxes } from 'lucide-react';
+import { Camera, MapPin, Database, Route as RouteIcon, UploadCloud, StopCircle, PlayCircle, ScanSearch, Check, X, Film, Trash2, LogOut, Gauge, Compass, BatteryMedium, Wifi, WifiOff, ImageIcon, Store, GraduationCap, Boxes, Tags, StepBack, StepForward } from 'lucide-react';
 import { api, getToken, setToken, fetchMediaUrl } from './services/api';
 import { queueSegment, queueGpsPoint, queueImage, pendingCounts, startAutoFlush } from './services/offlineQueue';
 import { AuthImg, AuthVideo } from './AuthMedia';
@@ -163,6 +163,24 @@ export default function App() {
   const [annImgUrl, setAnnImgUrl] = useState<string | null>(null);
   const [annBox, setAnnBox] = useState<Box | null>(null);
   const [annType, setAnnType] = useState('electricity_pole');
+  const [annCustom, setAnnCustom] = useState(false);
+  const [annCustomType, setAnnCustomType] = useState('');
+  const [annCustomName, setAnnCustomName] = useState('');
+  const [annCustomLayer, setAnnCustomLayer] = useState('other');
+  const [trainCustom, setTrainCustom] = useState(false);
+  const [trainCustomType, setTrainCustomType] = useState('');
+  const [trainCustomLayer, setTrainCustomLayer] = useState('other');
+  const [videoAnnSegment, setVideoAnnSegment] = useState<Segment | null>(null);
+  const [videoAnnUrl, setVideoAnnUrl] = useState<string | null>(null);
+  const [videoFrameUrl, setVideoFrameUrl] = useState<string | null>(null);
+  const [videoFrameTime, setVideoFrameTime] = useState(0);
+  const [videoAnnBox, setVideoAnnBox] = useState<Box | null>(null);
+  const [videoAnnType, setVideoAnnType] = useState('electricity_pole');
+  const [videoAnnName, setVideoAnnName] = useState('');
+  const [videoAnnLayer, setVideoAnnLayer] = useState('electricity');
+  const [videoAnnCustom, setVideoAnnCustom] = useState(false);
+  const [videoAnnBusy, setVideoAnnBusy] = useState(false);
+  const videoAnnotatorRef = useRef<HTMLVideoElement | null>(null);
   const [candidates, setCandidates] = useState<any[]>([]);
   const [candSummary, setCandSummary] = useState<any>(null);
   const [detRoutes, setDetRoutes] = useState<RouteInfo[]>([]);
@@ -315,9 +333,11 @@ export default function App() {
     setTrainBusy(true);
     try {
       const fd = new FormData();
-      fd.append('asset_type', trainType);
-      fd.append('layer', trainingLayerOf(trainType));
-      fd.append('asset_name', trainName.trim() || TRAINING_TYPE_LABEL[trainType] || trainType);
+      const resolvedType = trainCustom ? trainCustomType.trim() : trainType;
+      if (!resolvedType) { alert('יש להזין סוג נכס חדש'); return; }
+      fd.append('asset_type', resolvedType);
+      fd.append('layer', trainCustom ? trainCustomLayer : trainingLayerOf(trainType));
+      fd.append('asset_name', trainName.trim() || TRAINING_TYPE_LABEL[resolvedType] || resolvedType);
       fd.append('bbox_cx', String(trainBox.cx));
       fd.append('bbox_cy', String(trainBox.cy));
       fd.append('bbox_w', String(trainBox.w));
@@ -368,12 +388,74 @@ export default function App() {
 
   async function saveAnnotation() {
     if (annImg == null || !annBox) return;
+    const resolvedType = annCustom ? annCustomType.trim() : annType;
+    if (!resolvedType) { alert('יש להזין סוג נכס חדש'); return; }
     await api(`/captured-images/${annImg}/annotate`, {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ asset_type:annType, bbox_cx:annBox.cx, bbox_cy:annBox.cy, bbox_w:annBox.w, bbox_h:annBox.h }),
+      body: JSON.stringify({
+        asset_type:resolvedType,
+        asset_name:annCustomName.trim() || TRAINING_TYPE_LABEL[resolvedType] || resolvedType,
+        layer: annCustom ? annCustomLayer : trainingLayerOf(resolvedType),
+        bbox_cx:annBox.cx, bbox_cy:annBox.cy, bbox_w:annBox.w, bbox_h:annBox.h
+      }),
     });
-    setAnnImg(null); setAnnBox(null);
+    setAnnImg(null); setAnnBox(null); setAnnCustomName(''); setAnnCustomType('');
     loadTraining();
+  }
+
+  async function openVideoAnnotator(segment: Segment) {
+    setVideoAnnSegment(segment);
+    setVideoFrameUrl(null); setVideoAnnBox(null); setVideoAnnName('');
+    try { setVideoAnnUrl(await fetchMediaUrl(`/video-segments/${segment.id}/stream`)); }
+    catch { setVideoAnnUrl(null); }
+  }
+
+  function closeVideoAnnotator() {
+    if (videoAnnUrl) URL.revokeObjectURL(videoAnnUrl);
+    setVideoAnnSegment(null); setVideoAnnUrl(null); setVideoFrameUrl(null); setVideoAnnBox(null);
+  }
+
+  function captureVideoFrame() {
+    const video = videoAnnotatorRef.current;
+    if (!video || video.readyState < 2 || !video.videoWidth || !video.videoHeight) return;
+    video.pause();
+    const canvas = document.createElement('canvas');
+    canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+    canvas.getContext('2d')!.drawImage(video, 0, 0, canvas.width, canvas.height);
+    setVideoFrameTime(video.currentTime);
+    setVideoFrameUrl(canvas.toDataURL('image/jpeg', .95));
+    setVideoAnnBox(null);
+  }
+
+  function stepVideo(seconds: number) {
+    const video = videoAnnotatorRef.current;
+    if (!video) return;
+    video.pause();
+    video.currentTime = Math.max(0, Math.min(video.duration || Infinity, video.currentTime + seconds));
+  }
+
+  async function saveVideoAnnotation() {
+    if (!videoAnnSegment || !videoAnnBox) return;
+    const resolvedType = videoAnnCustom ? videoAnnType.trim() : videoAnnType;
+    if (!resolvedType) { alert('יש להזין סוג נכס'); return; }
+    setVideoAnnBusy(true);
+    try {
+      await api(`/video-segments/${videoAnnSegment.id}/annotate`, {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({
+          timestamp_s: videoFrameTime,
+          asset_type: resolvedType,
+          asset_name: videoAnnName.trim() || TRAINING_TYPE_LABEL[resolvedType] || resolvedType,
+          layer: videoAnnLayer,
+          bbox_cx: videoAnnBox.cx, bbox_cy: videoAnnBox.cy,
+          bbox_w: videoAnnBox.w, bbox_h: videoAnnBox.h,
+        }),
+      });
+      setVideoFrameUrl(null); setVideoAnnBox(null); setVideoAnnName('');
+      await loadTraining();
+      alert('הנכס נשמר כדוגמת אימון');
+    } catch (err) { alert(`שמירה נכשלה: ${String(err)}`); }
+    finally { setVideoAnnBusy(false); }
   }
 
   async function saveSampleBox() {
@@ -829,6 +911,7 @@ export default function App() {
                   <span>{fmtTime(s.captured_at)}</span>
                   <span>{fmtSize(s.size_bytes)}</span>
                   <span className={`chip ${s.processed?'approved':'draft'}`}>{s.processed?'עובד ב־AI':'בתור לעיבוד'}</span>
+                  <button className="annotate-video-btn" onClick={()=>openVideoAnnotator(s)}><Tags size={15}/> סמן נכסים</button>
                   {canValidate && <button className="icon-danger" title="מחק מקטע" onClick={()=>deleteSegment(s.id)}><Trash2 size={16}/></button>}
                 </div>
               </div>)}
@@ -866,14 +949,15 @@ export default function App() {
         {detRoute !== null && <>
           <div className="analysis-bar">
             {canValidate && <button className="primary big" onClick={()=>runAnalysis(detRoute)}
-              disabled={analysisJob && analysisJob.status==='running'}>
+              disabled={analysisJob && ['queued','running'].includes(analysisJob.status)}>
               <ScanSearch size={18}/> ניתוח תמונות וחילוץ נכסים
             </button>}
             {analysisJob && <div className="analysis-progress">
               <span>עובד: {analysisJob.processed}/{analysisJob.total}</span>
               <span>נכסים שזוהו: {analysisJob.candidates ?? detCands.length}</span>
-              <span className={`chip ${analysisJob.status==='done'?'approved':'draft'}`}>
-                {analysisJob.status==='done'?'הושלם':'מנתח...'}</span>
+              <span className={`chip ${analysisJob.status==='done'?'approved':analysisJob.status==='failed'?'rejected':'draft'}`}>
+                {analysisJob.status==='done'?'הושלם':analysisJob.status==='failed'?'נכשל':analysisJob.status==='queued'?'ממתין לעובד':'מנתח...'}</span>
+              {analysisJob.detail && <span className="analysis-error">{analysisJob.detail}</span>}
             </div>}
           </div>
 
@@ -1001,6 +1085,41 @@ export default function App() {
         </div>
       </section>}
 
+      {videoAnnSegment && <div className="modal-backdrop" onClick={closeVideoAnnotator}>
+        <div className="modal video-annotator-modal" onClick={e=>e.stopPropagation()}>
+          <h3>תיוג נכסים מתוך וידאו — מקטע {videoAnnSegment.id}</h3>
+          {!videoFrameUrl ? <>
+            {videoAnnUrl ? <video ref={videoAnnotatorRef} src={videoAnnUrl} controls playsInline preload="metadata" className="annotation-video"/>
+              : <div className="media-loading">טוען וידאו...</div>}
+            <div className="video-annotation-controls">
+              <button type="button" onClick={()=>stepVideo(-1)}><StepBack size={16}/> שנייה אחורה</button>
+              <button type="button" className="primary" onClick={captureVideoFrame}><Tags size={16}/> סמן נכס בפריים הנוכחי</button>
+              <button type="button" onClick={()=>stepVideo(1)}><StepForward size={16}/> שנייה קדימה</button>
+            </div>
+          </> : <>
+            <div className="frame-time">זמן בווידאו: {videoFrameTime.toFixed(2)} שניות</div>
+            <BBoxPicker src={videoFrameUrl} onChange={setVideoAnnBox}/>
+            <label className="form-check form-switch annotation-switch">
+              <input className="form-check-input" type="checkbox" checked={videoAnnCustom} onChange={e=>setVideoAnnCustom(e.target.checked)}/>
+              <span className="form-check-label">סוג נכס חדש / טקסט חופשי</span>
+            </label>
+            {videoAnnCustom ? <input className="annotation-input" placeholder="סוג חדש באנגלית, למשל solar_panel" value={videoAnnType} onChange={e=>setVideoAnnType(e.target.value)}/>
+              : <select className="annotation-input" value={videoAnnType} onChange={e=>{setVideoAnnType(e.target.value);setVideoAnnLayer(trainingLayerOf(e.target.value));}}>
+                  {TRAINING_TYPES.map(g => <optgroup key={g.layer} label={g.label}>{g.types.map(([v,l])=><option key={v} value={v}>{l}</option>)}</optgroup>)}
+                </select>}
+            <select className="annotation-input" value={videoAnnLayer} onChange={e=>setVideoAnnLayer(e.target.value)}>
+              {Object.entries({...layerLabels, other:'אחר'}).map(([v,l])=><option key={v} value={v}>{l}</option>)}
+            </select>
+            <input className="annotation-input" placeholder="שם חופשי / תיאור הנכס" value={videoAnnName} onChange={e=>setVideoAnnName(e.target.value)}/>
+            <div className="modal-actions">
+              <button className="reject" type="button" onClick={()=>{setVideoFrameUrl(null);setVideoAnnBox(null);}}><X size={16}/> חזור לווידאו</button>
+              <button className="approve" type="button" disabled={!videoAnnBox || videoAnnBusy} onClick={saveVideoAnnotation}><Check size={16}/> {videoAnnBusy?'שומר...':'שמור לאימון'}</button>
+            </div>
+          </>}
+          {!videoFrameUrl && <div className="modal-actions"><button className="reject" type="button" onClick={closeVideoAnnotator}><X size={16}/> סגור</button></div>}
+        </div>
+      </div>}
+
       {tab==='training' && <section>
         <div className="section-head"><div>
           <h2>תיוג נכסים לאימון AI</h2>
@@ -1033,12 +1152,21 @@ export default function App() {
                 <button type="button" className="link-btn" onClick={()=>pickTrainFile(null)}>החלף תמונה</button>
               </>}
 
-          <select value={trainType} onChange={e=>setTrainType(e.target.value)}>
+          <label className="form-check form-switch">
+            <input className="form-check-input" type="checkbox" checked={trainCustom} onChange={e=>setTrainCustom(e.target.checked)}/>
+            <span className="form-check-label">סוג נכס חדש</span>
+          </label>
+          {trainCustom ? <>
+            <input placeholder="סוג חדש באנגלית, למשל solar_panel" value={trainCustomType} onChange={e=>setTrainCustomType(e.target.value)}/>
+            <select value={trainCustomLayer} onChange={e=>setTrainCustomLayer(e.target.value)}>
+              {Object.entries({...layerLabels, other:'אחר'}).map(([v,l])=><option key={v} value={v}>{l}</option>)}
+            </select>
+          </> : <select value={trainType} onChange={e=>setTrainType(e.target.value)}>
             {TRAINING_TYPES.map(g => <optgroup key={g.layer} label={g.label}>
               {g.types.map(([v,l]) => <option key={v} value={v}>{l}</option>)}
             </optgroup>)}
-          </select>
-          <input placeholder="שם/תיאור (לא חובה)" value={trainName} onChange={e=>setTrainName(e.target.value)}/>
+          </select>}
+          <input placeholder="שם חופשי / תיאור הנכס" value={trainName} onChange={e=>setTrainName(e.target.value)}/>
           {trainFile && !trainBox && <span className="train-warn">סמן תיבה סביב הנכס כדי להמשיך</span>}
           <button className="primary big" type="submit" disabled={!trainFile || !trainBox || trainBusy}>
             <UploadCloud size={18}/> {trainBusy ? 'מעלה...' : 'הוסף דוגמה'}
@@ -1084,11 +1212,21 @@ export default function App() {
             {annImgUrl
               ? <BBoxPicker src={annImgUrl} onChange={setAnnBox}/>
               : <div className="media-loading">טוען תמונה...</div>}
-            <select value={annType} onChange={e=>setAnnType(e.target.value)} style={{marginTop:12,width:'100%'}}>
+            <label className="form-check form-switch annotation-switch">
+              <input className="form-check-input" type="checkbox" checked={annCustom} onChange={e=>setAnnCustom(e.target.checked)}/>
+              <span className="form-check-label">הוסף סוג נכס חדש</span>
+            </label>
+            {annCustom ? <>
+              <input className="annotation-input" placeholder="סוג חדש באנגלית" value={annCustomType} onChange={e=>setAnnCustomType(e.target.value)}/>
+              <select className="annotation-input" value={annCustomLayer} onChange={e=>setAnnCustomLayer(e.target.value)}>
+                {Object.entries({...layerLabels, other:'אחר'}).map(([v,l])=><option key={v} value={v}>{l}</option>)}
+              </select>
+            </> : <select value={annType} onChange={e=>setAnnType(e.target.value)} style={{marginTop:12,width:'100%'}}>
               {TRAINING_TYPES.map(g => <optgroup key={g.layer} label={g.label}>
                 {g.types.map(([v,l]) => <option key={v} value={v}>{l}</option>)}
               </optgroup>)}
-            </select>
+            </select>}
+            <input className="annotation-input" placeholder="שם חופשי / תיאור" value={annCustomName} onChange={e=>setAnnCustomName(e.target.value)}/>
             <div className="modal-actions">
               <button className="reject" onClick={()=>setAnnImg(null)}><X size={16}/> ביטול</button>
               <button className="approve" disabled={!annBox} onClick={saveAnnotation}><Check size={16}/> שמור נכס</button>

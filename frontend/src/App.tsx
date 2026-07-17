@@ -287,9 +287,19 @@ export default function App() {
         setPhotoStats(s => ({...s, rejected: s.rejected + 1}));
         return;
       }
+      // Camera buffer keeps a fixed landscape orientation; upright the still
+      // to match how the phone is held so AI runs on a correctly-rotated image.
+      const angle = (screen.orientation && screen.orientation.angle) || 0;
       const canvas = document.createElement('canvas');
-      canvas.width = w; canvas.height = h;
-      canvas.getContext('2d')!.drawImage(video, 0, 0);
+      const ctx = canvas.getContext('2d')!;
+      if (angle === 90 || angle === 270) { canvas.width = h; canvas.height = w; }
+      else { canvas.width = w; canvas.height = h; }
+      ctx.save();
+      if (angle === 90) { ctx.translate(0, w); ctx.rotate(-Math.PI/2); }        // CCW
+      else if (angle === 270) { ctx.translate(h, 0); ctx.rotate(Math.PI/2); }   // CW
+      else if (angle === 180) { ctx.translate(w, h); ctx.rotate(Math.PI); }
+      ctx.drawImage(video, 0, 0);
+      ctx.restore();
       const blob = await new Promise<Blob | null>(r => canvas.toBlob(r, 'image/jpeg', 0.88));
       if (!blob) return;
       const fields: Record<string, string> = {
@@ -363,8 +373,23 @@ export default function App() {
     else if (e.absolute && e.alpha != null) headingRef.current = (360 - e.alpha) % 360;  // Android
   }
 
+  // iOS requires DeviceOrientationEvent.requestPermission() to run inside the
+  // user gesture, BEFORE any await (camera/network) consumes the activation.
+  function enableCompass() {
+    const doe = DeviceOrientationEvent as any;
+    if (typeof doe?.requestPermission === 'function') {
+      doe.requestPermission()
+        .then((r: string) => { if (r === 'granted') window.addEventListener('deviceorientation', onOrientation); })
+        .catch(() => {});
+    } else {
+      window.addEventListener('deviceorientationabsolute', onOrientation as any);
+      window.addEventListener('deviceorientation', onOrientation);
+    }
+  }
+
   // ---- route lifecycle ----
   async function startRoute() {
+    enableCompass();  // must be first — preserves the tap's transient activation
     try {
       setStatus('פותח מסלול...');
       localStorage.setItem('vehicle_name', vehicleName);
@@ -386,16 +411,6 @@ export default function App() {
       }
       recordingRef.current = true;
       recordNextSegment(stream, route.id, pickMimeType());
-
-      // compass (iOS requires an explicit permission request from a user gesture)
-      const doe = DeviceOrientationEvent as any;
-      if (typeof doe?.requestPermission === 'function') {
-        try { if (await doe.requestPermission() === 'granted')
-          window.addEventListener('deviceorientation', onOrientation); } catch { /* denied */ }
-      } else {
-        window.addEventListener('deviceorientationabsolute', onOrientation as any);
-        window.addEventListener('deviceorientation', onOrientation);
-      }
 
       watchId.current = navigator.geolocation.watchPosition(
         async p => {

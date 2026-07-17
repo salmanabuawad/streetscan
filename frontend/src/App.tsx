@@ -31,11 +31,6 @@ type Asset = {
   id:number; name:string; asset_type:string; layer:string; status:string;
   latitude?:number; longitude?:number; underground:boolean; source:string;
 };
-type Detection = {
-  id:number; route_id?:number; proposed_asset_type:string; proposed_layer:string;
-  confidence:number; latitude?:number; longitude?:number; status:string;
-  snapshot_path?:string; created_at:string;
-};
 type RouteInfo = {
   id:number; vehicle_name:string; driver_name?:string;
   started_at:string; ended_at?:string; active:boolean;
@@ -145,7 +140,6 @@ export default function App() {
   const [tab, setTab] = useState<'record'|'videos'|'detections'|'businesses'|'candidates'|'training'|'assets'|'dashboard'>('record');
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
   const [assets, setAssets] = useState<Asset[]>([]);
-  const [detections, setDetections] = useState<Detection[]>([]);
   const [businesses, setBusinesses] = useState<Business[]>([]);
   const [training, setTraining] = useState<{id:number;asset_name:string;asset_type:string;layer:string;latitude?:number;longitude?:number;bbox_cx?:number|null}[]>([]);
   const [trainType, setTrainType] = useState('electricity_pole');
@@ -256,7 +250,6 @@ export default function App() {
   async function refresh() {
     setDashboard(await api<Dashboard>('/dashboard'));
     setAssets(await api<Asset[]>('/assets'));
-    setDetections(await api<Detection[]>('/detections'));
     setBusinesses(await api<Business[]>('/businesses'));
   }
 
@@ -504,11 +497,6 @@ export default function App() {
     }).catch(() => {});
     return () => { stopFlush(); window.removeEventListener('online', onNet); window.removeEventListener('offline', onNet); };
   }, [user]);
-
-  async function decideDetection(id: number, action: 'approve'|'reject') {
-    await api(`/detections/${id}/${action}`, {method:'POST'});
-    refresh();
-  }
 
   async function openVideos() {
     setTab('videos');

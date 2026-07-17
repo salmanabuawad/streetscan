@@ -27,11 +27,11 @@ log = logging.getLogger("streetscan.worker")
 
 # COCO class name -> (infrastructure layer, asset type)
 CLASS_MAP: dict[str, tuple[str, str]] = {
-    "fire hydrant": ("water", "fire_hydrant"),
-    "stop sign": ("road", "stop_sign"),
-    "traffic light": ("road", "traffic_light"),
-    "bench": ("public_space", "bench"),
-    "parking meter": ("road", "parking_meter"),
+    # Pilot focus is electricity, telecom and stores. COCO has no classes for
+    # utility poles, telecom cabinets or storefronts, so YOLO object detection
+    # stays quiet here until a custom-trained model is dropped in via
+    # settings.model_path. Storefront/business recognition runs via the OCR
+    # path (see ocr_worker), not this map.
 }
 
 # Two sightings of the same class within this window are treated as one object.

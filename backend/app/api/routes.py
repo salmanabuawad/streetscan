@@ -418,6 +418,10 @@ async def add_training_sample(
     notes: str | None = Form(None),
     latitude: float | None = Form(None),
     longitude: float | None = Form(None),
+    bbox_cx: float | None = Form(None),
+    bbox_cy: float | None = Form(None),
+    bbox_w: float | None = Form(None),
+    bbox_h: float | None = Form(None),
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
@@ -430,6 +434,7 @@ async def add_training_sample(
     sample = TrainingSample(
         filename=str(target), asset_name=asset_name.strip(), asset_type=asset_type.strip(),
         layer=layer, notes=notes, latitude=latitude, longitude=longitude, uploaded_by=user.id,
+        bbox_cx=bbox_cx, bbox_cy=bbox_cy, bbox_w=bbox_w, bbox_h=bbox_h,
     )
     db.add(sample)
     db.commit()

@@ -112,6 +112,10 @@ class TrainingSampleOut(BaseModel):
     notes: str | None
     latitude: float | None
     longitude: float | None
+    bbox_cx: float | None
+    bbox_cy: float | None
+    bbox_w: float | None
+    bbox_h: float | None
     created_at: datetime
     model_config = ConfigDict(from_attributes=True)
 

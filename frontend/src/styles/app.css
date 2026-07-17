@@ -60,6 +60,12 @@ th{color:#94a3b8}
 .train-photo-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;color:#94a3b8;padding:40px 0}
 .train-form .big{justify-content:center}
 .train-counts{display:flex;gap:8px;flex-wrap:wrap;margin:4px 0 16px}
+.bbox-wrap{position:relative;border-radius:14px;overflow:hidden;background:#000;touch-action:none;user-select:none;cursor:crosshair}
+.bbox-wrap img{width:100%;max-height:60vh;object-fit:contain;display:block;pointer-events:none}
+.bbox-rect{position:absolute;border:2px solid #f97316;background:rgba(249,115,22,.18);pointer-events:none}
+.bbox-hint{position:absolute;bottom:0;left:0;right:0;text-align:center;padding:6px;font-size:12.5px;color:#fff;background:linear-gradient(transparent,rgba(0,0,0,.65));pointer-events:none}
+.link-btn{background:none;border:0;color:#60a5fa;cursor:pointer;font-size:13px;align-self:flex-start;padding:0}
+.train-warn{color:#fbbf24;font-size:13px}
 .detection-title select{background:#0b1220;border:1px solid #334155;color:#cbd5e1;border-radius:8px;padding:5px 8px;font-size:13px}
 .empty-note{color:#94a3b8;padding:22px;text-align:center;background:#111827;border:1px solid #243244;border-radius:18px;margin-top:16px}
 .route-list{display:flex;gap:10px;flex-wrap:wrap;margin:16px 0}

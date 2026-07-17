@@ -5,6 +5,7 @@ import { queueSegment, queueGpsPoint, queueImage, pendingCounts, startAutoFlush 
 import { AuthImg, AuthVideo } from './AuthMedia';
 import Login from './Login';
 import MapView from './MapView';
+import BBoxPicker, { type Box } from './BBoxPicker';
 
 const SEGMENT_MS = 15000;
 
@@ -142,10 +143,12 @@ export default function App() {
   const [assets, setAssets] = useState<Asset[]>([]);
   const [detections, setDetections] = useState<Detection[]>([]);
   const [businesses, setBusinesses] = useState<Business[]>([]);
-  const [training, setTraining] = useState<{id:number;asset_name:string;asset_type:string;layer:string;latitude?:number;longitude?:number}[]>([]);
+  const [training, setTraining] = useState<{id:number;asset_name:string;asset_type:string;layer:string;latitude?:number;longitude?:number;bbox_cx?:number|null}[]>([]);
   const [trainType, setTrainType] = useState('electricity_pole');
   const [trainName, setTrainName] = useState('');
   const [trainFile, setTrainFile] = useState<File | null>(null);
+  const [trainFileUrl, setTrainFileUrl] = useState<string | null>(null);
+  const [trainBox, setTrainBox] = useState<Box | null>(null);
   const [trainBusy, setTrainBusy] = useState(false);
   const [routes, setRoutes] = useState<RouteInfo[]>([]);
   const [selectedRoute, setSelectedRoute] = useState<number | null>(null);
@@ -221,15 +224,26 @@ export default function App() {
     setTraining(await api('/training-samples'));
   }
 
+  function pickTrainFile(f: File | null) {
+    if (trainFileUrl) URL.revokeObjectURL(trainFileUrl);
+    setTrainFile(f);
+    setTrainBox(null);
+    setTrainFileUrl(f ? URL.createObjectURL(f) : null);
+  }
+
   async function submitTrainingSample(e: React.FormEvent) {
     e.preventDefault();
-    if (!trainFile) return;
+    if (!trainFile || !trainBox) return;
     setTrainBusy(true);
     try {
       const fd = new FormData();
       fd.append('asset_type', trainType);
       fd.append('layer', trainingLayerOf(trainType));
       fd.append('asset_name', trainName.trim() || TRAINING_TYPE_LABEL[trainType] || trainType);
+      fd.append('bbox_cx', String(trainBox.cx));
+      fd.append('bbox_cy', String(trainBox.cy));
+      fd.append('bbox_w', String(trainBox.w));
+      fd.append('bbox_h', String(trainBox.h));
       if (posRef.current) {
         fd.append('latitude', String(posRef.current.lat));
         fd.append('longitude', String(posRef.current.lng));
@@ -242,7 +256,7 @@ export default function App() {
       fd.append('file', trainFile, trainFile.name || 'sample.jpg');
       await api('/training-samples', { method:'POST', body: fd });
       setTrainName('');
-      setTrainFile(null);
+      pickTrainFile(null);
       loadTraining();
     } catch (err) {
       alert(`שגיאה בהעלאה: ${String(err)}`);
@@ -792,13 +806,16 @@ export default function App() {
         </div></div>
 
         <form className="panel train-form" onSubmit={submitTrainingSample}>
-          <label className="train-photo">
-            {trainFile
-              ? <img src={URL.createObjectURL(trainFile)} alt="preview"/>
-              : <div className="train-photo-empty"><Camera size={30}/><span>צלם / בחר תמונה</span></div>}
-            <input type="file" accept="image/*" capture="environment" hidden
-              onChange={e => setTrainFile(e.target.files?.[0] || null)}/>
-          </label>
+          {!trainFile || !trainFileUrl
+            ? <label className="train-photo">
+                <div className="train-photo-empty"><Camera size={30}/><span>צלם / בחר תמונה</span></div>
+                <input type="file" accept="image/*" capture="environment" hidden
+                  onChange={e => pickTrainFile(e.target.files?.[0] || null)}/>
+              </label>
+            : <>
+                <BBoxPicker src={trainFileUrl} onChange={setTrainBox}/>
+                <button type="button" className="link-btn" onClick={()=>pickTrainFile(null)}>החלף תמונה</button>
+              </>}
 
           <select value={trainType} onChange={e=>setTrainType(e.target.value)}>
             {TRAINING_TYPES.map(g => <optgroup key={g.layer} label={g.label}>
@@ -806,7 +823,8 @@ export default function App() {
             </optgroup>)}
           </select>
           <input placeholder="שם/תיאור (לא חובה)" value={trainName} onChange={e=>setTrainName(e.target.value)}/>
-          <button className="primary big" type="submit" disabled={!trainFile || trainBusy}>
+          {trainFile && !trainBox && <span className="train-warn">סמן תיבה סביב הנכס כדי להמשיך</span>}
+          <button className="primary big" type="submit" disabled={!trainFile || !trainBox || trainBusy}>
             <UploadCloud size={18}/> {trainBusy ? 'מעלה...' : 'הוסף דוגמה'}
           </button>
         </form>
@@ -832,7 +850,9 @@ export default function App() {
                   </div>
                   <div className="detection-meta">
                     <span>{layerLabels[t.layer] || t.layer}</span>
-                    {t.asset_name && t.asset_name !== TRAINING_TYPE_LABEL[t.asset_type] && <span>{t.asset_name}</span>}
+                    {t.bbox_cx != null
+                      ? <span className="chip approved">תיבה ✓</span>
+                      : <span className="chip draft">ללא תיבה</span>}
                     {t.latitude != null ? <span>📍</span> : <span>ללא מיקום</span>}
                   </div>
                 </div>

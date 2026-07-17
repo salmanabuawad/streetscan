@@ -600,7 +600,7 @@ def overview(db: Session = Depends(get_db)):
     # total surveyed distance across all routes (haversine over ordered points)
     distance_km = 0.0
     for r in routes:
-        pts = db.scalars(
+        pts = db.execute(
             select(GPSPoint.latitude, GPSPoint.longitude)
             .where(GPSPoint.route_id == r.id).order_by(GPSPoint.captured_at)
         ).all()

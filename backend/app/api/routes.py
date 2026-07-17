@@ -18,7 +18,7 @@ from app.models.entities import (
     AnalysisJob,
 )
 from app.schemas.common import (
-    RouteCreate, RouteOut, GPSPointCreate, AssetCreate, AssetOut, DetectionOut,
+    RouteCreate, RouteOut, GPSPointCreate, AssetCreate, AssetOut,
     TicketCreate, TicketOut, SegmentOut, ImageOut, LoginIn, LoginOut, UserCreate, UserOut,
     BusinessOut, BusinessEdit, TrainingSampleOut, BBoxIn, VideoAnnotationIn,
 )
@@ -422,49 +422,6 @@ def list_assets(layer: str | None = None, db: Session = Depends(get_db)):
         except ValueError:
             raise HTTPException(400, f"Unknown layer '{layer}'")
     return db.scalars(stmt.limit(500)).all()
-
-@router.get("/detections", response_model=list[DetectionOut], dependencies=[DRIVER])
-def list_detections(db: Session = Depends(get_db)):
-    return db.scalars(select(Detection).order_by(Detection.created_at.desc()).limit(500)).all()
-
-@router.post("/detections/{detection_id}/approve", response_model=AssetOut, dependencies=[VALIDATOR])
-def approve_detection(detection_id: int, db: Session = Depends(get_db)):
-    detection = db.get(Detection, detection_id)
-    if not detection:
-        raise HTTPException(404, "Detection not found")
-    detection.status = DetectionStatus.APPROVED
-    asset = Asset(
-        name=f"Detected {detection.proposed_asset_type}",
-        asset_type=detection.proposed_asset_type,
-        layer=detection.proposed_layer,
-        latitude=detection.latitude,
-        longitude=detection.longitude,
-        source="ai_validated",
-    )
-    db.add(asset)
-    db.commit()
-    db.refresh(asset)
-    return asset
-
-@router.get("/detections/{detection_id}/snapshot", dependencies=[DRIVER])
-def detection_snapshot(detection_id: int, db: Session = Depends(get_db)):
-    detection = db.get(Detection, detection_id)
-    if not detection or not detection.snapshot_path:
-        raise HTTPException(404, "Snapshot not found")
-    path = Path(detection.snapshot_path)
-    if not path.is_file():
-        raise HTTPException(404, "Snapshot file missing")
-    return FileResponse(path, media_type="image/jpeg")
-
-@router.post("/detections/{detection_id}/reject", response_model=DetectionOut, dependencies=[VALIDATOR])
-def reject_detection(detection_id: int, db: Session = Depends(get_db)):
-    detection = db.get(Detection, detection_id)
-    if not detection:
-        raise HTTPException(404, "Detection not found")
-    detection.status = DetectionStatus.REJECTED
-    db.commit()
-    db.refresh(detection)
-    return detection
 
 @router.post("/tickets", response_model=TicketOut, dependencies=[VALIDATOR])
 def create_ticket(payload: TicketCreate, db: Session = Depends(get_db)):

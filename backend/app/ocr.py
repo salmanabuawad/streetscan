@@ -76,11 +76,15 @@ def clean_line(line: str) -> str:
 
 
 def run_ocr(image_path: str) -> dict | None:
-    """OCR a sign image. Returns {name, category, text, languages, confidence}
-    or None when no confident business-like text is found."""
     img = cv2.imread(image_path)
     if img is None:
         return None
+    return run_ocr_image(img)
+
+
+def run_ocr_image(img) -> dict | None:
+    """OCR a sign image (cv2 array). Returns {name, category, text, languages,
+    confidence} or None when no confident business-like text is found."""
     # Upscale small images a little; Tesseract likes taller text.
     h, w = img.shape[:2]
     if max(h, w) < 1400:

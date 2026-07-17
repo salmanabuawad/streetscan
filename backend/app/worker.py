@@ -266,7 +266,91 @@ def run_once(detector) -> int:
                 log.exception("ocr on image %s failed; skipping", image.id)
             image.ocr_processed = True
             db.commit()
+
+        # OCR pass over video frames — the clips capture far more signage
+        # than the stop stills.
+        for segment in db.scalars(
+            select(VideoSegment).where(VideoSegment.ocr_processed.is_(False))
+            .order_by(VideoSegment.id).limit(20)
+        ).all():
+            try:
+                n = process_segment_ocr(db, segment)
+                if n:
+                    log.info("segment %s -> %d business drafts (video OCR)", segment.id, n)
+            except Exception:
+                log.exception("video OCR on segment %s failed; skipping", segment.id)
+            segment.ocr_processed = True
+            db.commit()
     return total
+
+
+def blur_variance(frame) -> float:
+    return cv2.Laplacian(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), cv2.CV_64F).var()
+
+
+def norm_name(name: str) -> str:
+    return "".join(name.lower().split())
+
+
+def _keep_ocr(result: dict) -> bool:
+    # cut noise: keep a recognized category, or a confident, wordy name
+    return (result["category"] != "unknown"
+            or (result["confidence"] >= 0.6 and len(result["name"]) >= 5))
+
+
+def process_segment_ocr(db, segment: VideoSegment) -> int:
+    """Sample frames from a video, OCR sign text, create draft businesses.
+    Skips blurry frames, dedups repeats within the clip, keeps only recognized
+    categories or confident multi-letter names."""
+    cap, rotate_code = open_capture(segment.filename)
+    if not cap.isOpened():
+        return 0
+    if rotate_code is None and segment.orientation_hint:
+        rotate_code = HINT_ROTATE.get(segment.orientation_hint)
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    if fps <= 0:
+        fps = 30.0
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    duration = total_frames / fps if total_frames else 0.0
+    start_time = to_naive_utc(segment.captured_at) - timedelta(seconds=duration)
+    gps_points = db.scalars(select(GPSPoint).where(GPSPoint.route_id == segment.route_id)).all()
+
+    stride = max(1, int(round(fps * settings.ocr_frame_stride_s)))
+    seen: set[str] = set()
+    created = 0
+    idx = 0
+    while True:
+        if not cap.grab():
+            break
+        if idx % stride == 0:
+            ok, frame = cap.retrieve()
+            if ok and frame is not None:
+                if rotate_code is not None:
+                    frame = cv2.rotate(frame, rotate_code)
+                if blur_variance(frame) >= settings.ocr_blur_min:
+                    result = ocr_mod.run_ocr_image(frame)
+                    if result and _keep_ocr(result):
+                        key = norm_name(result["name"])
+                        if key not in seen:
+                            seen.add(key)
+                            frame_time = start_time + timedelta(seconds=idx / fps)
+                            point = nearest_gps(gps_points, frame_time)
+                            snap_dir = Path(settings.upload_dir) / "snapshots"
+                            snap_dir.mkdir(parents=True, exist_ok=True)
+                            snap = str(snap_dir / f"vbiz_{uuid.uuid4().hex}.jpg")
+                            cv2.imwrite(snap, frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                            db.add(Business(
+                                route_id=segment.route_id, name=result["name"],
+                                category=result["category"], ocr_text=result["text"],
+                                languages=result["languages"], confidence=result["confidence"],
+                                latitude=point.latitude if point else None,
+                                longitude=point.longitude if point else None,
+                                snapshot_path=snap,
+                            ))
+                            created += 1
+        idx += 1
+    cap.release()
+    return created
 
 
 def process_image_ocr(db, image: CapturedImage) -> int:

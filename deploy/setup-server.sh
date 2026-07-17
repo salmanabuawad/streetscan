@@ -71,6 +71,7 @@ echo "== schema migrations =="
 sudo -u postgres psql $DB_NAME -c "ALTER TABLE IF EXISTS video_segments ADD COLUMN IF NOT EXISTS orientation_hint INTEGER NOT NULL DEFAULT 0"
 sudo -u postgres psql $DB_NAME -c "ALTER TABLE IF EXISTS gps_points ADD COLUMN IF NOT EXISTS heading_deg DOUBLE PRECISION"
 sudo -u postgres psql $DB_NAME -c "ALTER TABLE IF EXISTS captured_images ADD COLUMN IF NOT EXISTS ocr_processed BOOLEAN NOT NULL DEFAULT FALSE"
+sudo -u postgres psql $DB_NAME -c "ALTER TABLE IF EXISTS video_segments ADD COLUMN IF NOT EXISTS ocr_processed BOOLEAN NOT NULL DEFAULT FALSE"
 for col in bbox_cx bbox_cy bbox_w bbox_h; do
   sudo -u postgres psql $DB_NAME -c "ALTER TABLE IF EXISTS training_samples ADD COLUMN IF NOT EXISTS $col DOUBLE PRECISION" 2>/dev/null || true
 done

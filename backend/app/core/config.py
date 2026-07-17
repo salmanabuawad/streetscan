@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     detection_confidence: float = 0.35
     frame_stride_s: float = 1.0             # analyse one frame per second
     worker_poll_s: int = 10
+    ocr_frame_stride_s: float = 1.5         # OCR one video frame per 1.5s
+    ocr_blur_min: float = 90.0             # skip frames blurrier than this (Laplacian var)
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

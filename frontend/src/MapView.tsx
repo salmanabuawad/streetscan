@@ -5,6 +5,10 @@ import { api } from './services/api';
 
 // Buqata (בוקעאתא), northern Golan Heights
 const BUQATA_CENTER: [number, number] = [33.201, 35.779];
+// zoom 14 shows the whole village + immediate surroundings; don't allow
+// zooming further out than that, and keep panning near Buqata.
+const MIN_ZOOM = 14;
+const MAX_BOUNDS: [[number, number], [number, number]] = [[33.16, 35.72], [33.24, 35.84]];
 
 const LAYER_COLORS: Record<string, string> = {
   telecom: '#a855f7', electricity: '#eab308', water: '#3b82f6', sewage: '#b45309',
@@ -28,9 +32,15 @@ export default function MapView({ layerLabels, assetTypeLabels }: {
 
   useEffect(() => {
     if (!mapEl.current || mapRef.current) return;
-    const map = L.map(mapEl.current, { zoomControl: true }).setView(BUQATA_CENTER, 15);
+    const map = L.map(mapEl.current, {
+      zoomControl: true,
+      minZoom: MIN_ZOOM,
+      maxBounds: L.latLngBounds(MAX_BOUNDS),
+      maxBoundsViscosity: 0.8,
+    }).setView(BUQATA_CENTER, 15);
     mapRef.current = map;
     L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      minZoom: MIN_ZOOM,
       maxZoom: 19,
       attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
     }).addTo(map);

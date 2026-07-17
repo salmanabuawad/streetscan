@@ -169,6 +169,7 @@ export default function App() {
   const [detRoute, setDetRoute] = useState<number | null>(null);
   const [detCands, setDetCands] = useState<any[]>([]);
   const [analysisJob, setAnalysisJob] = useState<any>(null);
+  const [allCats, setAllCats] = useState<string[]>([]);
   const [candCat, setCandCat] = useState<string>('');
   const [candBand, setCandBand] = useState<string>('');
   const [routes, setRoutes] = useState<RouteInfo[]>([]);
@@ -248,6 +249,7 @@ export default function App() {
   async function openDetections() {
     setTab('detections');
     setDetRoutes(await api<RouteInfo[]>('/routes'));
+    try { setAllCats((await api<any[]>('/asset-categories')).map(c => c.name)); } catch { /* */ }
   }
 
   async function selectDetRoute(id: number) {
@@ -886,9 +888,8 @@ export default function App() {
                 <div className="detection-title">
                   {canValidate
                     ? <select value={c.category} onChange={e=>correctCand(c.id, e.target.value)}>
-                        {candSummary && Object.keys(candSummary.by_category||{}).map(k=>
+                        {(allCats.length ? allCats : [c.category]).map(k=>
                           <option key={k} value={k}>{TRAINING_TYPE_LABEL[k]||categoryLabels[k]||k}</option>)}
-                        {!candSummary && <option value={c.category}>{TRAINING_TYPE_LABEL[c.category]||c.category}</option>}
                       </select>
                     : <strong>{TRAINING_TYPE_LABEL[c.category]||c.category}</strong>}
                   <span className={`chip ${c.band==='high'?'approved':c.band==='medium'?'draft':''}`}>{Math.round(c.confidence*100)}%</span>

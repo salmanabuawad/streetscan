@@ -80,6 +80,9 @@ CATEGORIES = [
     ("vegetation_blocking", "hazard", ["vegetation covering a sign"], "openvocab", 0.06, "parks"),
     ("missing_manhole_cover", "hazard", ["missing manhole cover open hole"], "openvocab", 0.06, "sewage"),
     ("road_obstacle", "hazard", ["obstacle blocking the road"], "openvocab", 0.06, "roads"),
+    # safety / civil-defense (important in this region)
+    ("migunit", "safety", ["concrete roadside bomb shelter", "concrete protective shelter"], "openvocab", 0.05, "emergency"),
+    ("public_shelter", "safety", ["public bomb shelter building"], "openvocab", 0.05, "emergency"),
 ]
 
 

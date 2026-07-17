@@ -165,6 +165,10 @@ export default function App() {
   const [annType, setAnnType] = useState('electricity_pole');
   const [candidates, setCandidates] = useState<any[]>([]);
   const [candSummary, setCandSummary] = useState<any>(null);
+  const [detRoutes, setDetRoutes] = useState<RouteInfo[]>([]);
+  const [detRoute, setDetRoute] = useState<number | null>(null);
+  const [detCands, setDetCands] = useState<any[]>([]);
+  const [analysisJob, setAnalysisJob] = useState<any>(null);
   const [candCat, setCandCat] = useState<string>('');
   const [candBand, setCandBand] = useState<string>('');
   const [routes, setRoutes] = useState<RouteInfo[]>([]);
@@ -239,6 +243,41 @@ export default function App() {
 
   async function loadTraining() {
     setTraining(await api('/training-samples'));
+  }
+
+  async function openDetections() {
+    setTab('detections');
+    setDetRoutes(await api<RouteInfo[]>('/routes'));
+  }
+
+  async function selectDetRoute(id: number) {
+    setDetRoute(id);
+    setAnalysisJob(null);
+    setDetCands(await api(`/assets/candidates?route_id=${id}&limit=120`));
+  }
+
+  async function runAnalysis(routeId: number) {
+    const job = await api<any>(`/analysis/routes/${routeId}`, {method:'POST'});
+    setAnalysisJob({...job, processed:0, remaining:job.queued_images, status:'running', candidates:0});
+    const poll = setInterval(async () => {
+      try {
+        const p = await api<any>(`/analysis/jobs/${job.job_id}/progress`);
+        setAnalysisJob(p);
+        setDetCands(await api(`/assets/candidates?route_id=${routeId}&limit=120`));
+        if (p.status === 'done') clearInterval(poll);
+      } catch { clearInterval(poll); }
+    }, 6000);
+  }
+
+  async function decideCand(id: number, action: 'approve'|'reject') {
+    await api(`/assets/candidates/${id}/${action}`, {method:'POST'});
+    setDetCands(cs => cs.filter(c => c.id !== id));
+  }
+
+  async function correctCand(id: number, category: string) {
+    const fd = new FormData(); fd.append('category', category);
+    await api(`/assets/candidates/${id}/correct`, {method:'POST', body: fd});
+    setDetCands(cs => cs.filter(c => c.id !== id));
   }
 
   async function loadCandidates() {
@@ -694,9 +733,8 @@ export default function App() {
     <nav className="tabs">
       <button onClick={()=>setTab('record')} className={tab==='record'?'active':''}><Camera size={18}/> הקלטה</button>
       <button onClick={openVideos} className={tab==='videos'?'active':''}><Film size={18}/> וידאו</button>
-      <button onClick={()=>setTab('detections')} className={tab==='detections'?'active':''}>
-        <ScanSearch size={18}/> זיהויים
-        {detections.filter(d=>d.status==='draft').length > 0 && ` (${detections.filter(d=>d.status==='draft').length})`}
+      <button onClick={openDetections} className={tab==='detections'?'active':''}>
+        <ScanSearch size={18}/> זיהויי AI
       </button>
       <button onClick={()=>setTab('businesses')} className={tab==='businesses'?'active':''}>
         <Store size={18}/> עסקים
@@ -812,34 +850,62 @@ export default function App() {
 
       {tab==='detections' && <section>
         <div className="section-head"><div>
-          <h2>זיהויי AI</h2>
-          <p>זיהויים אוטומטיים מווידאו ותמונות. אישור הופך זיהוי לנכס במאגר; דחייה מסירה אותו.</p>
+          <h2>זיהויי AI — נכסי תשתית</h2>
+          <p>זיהוי מקומי (open-vocabulary) של עמודים, ארונות, שוחות ומפגעים. תוצאות ניסיוניות הדורשות אימות אנושי.</p>
         </div></div>
-        {!detections.length && <div className="empty-note">
-          אין עדיין זיהויי תשתית. זיהוי עמודי חשמל/תקשורת וארונות דורש מודל YOLO ייעודי מאומן — הפיילוט אוסף כעת את התמונות לאימונו. זיהוי עסקים מופיע בטאב "עסקים".
-        </div>}
-        <div className="detection-grid">
-          {detections.map(d => <div className="detection-card" key={d.id}>
-            {d.snapshot_path && <AuthImg path={`/detections/${d.id}/snapshot`} alt={d.proposed_asset_type} loading="lazy"/>}
-            <div className="detection-body">
-              <div className="detection-title">
-                <strong>{assetTypeLabels[d.proposed_asset_type] || d.proposed_asset_type}</strong>
-                <span className={`chip ${d.status}`}>{statusLabels[d.status] || d.status}</span>
-              </div>
-              <div className="detection-meta">
-                <span>{layerLabels[d.proposed_layer] || d.proposed_layer}</span>
-                <span>ביטחון: {Math.round(d.confidence*100)}%</span>
-                {d.latitude != null && d.longitude != null
-                  ? <span>{d.latitude.toFixed(5)}, {d.longitude.toFixed(5)}</span>
-                  : <span>ללא מיקום</span>}
-              </div>
-              {d.status==='draft' && canValidate && <div className="detection-actions">
-                <button className="approve" onClick={()=>decideDetection(d.id,'approve')}><Check size={16}/> אישור</button>
-                <button className="reject" onClick={()=>decideDetection(d.id,'reject')}><X size={16}/> דחייה</button>
-              </div>}
-            </div>
-          </div>)}
+
+        <div className="route-list">
+          {detRoutes.map(r => <button key={r.id}
+            className={`route-item ${detRoute===r.id?'active':''}`} onClick={()=>selectDetRoute(r.id)}>
+            <strong>מסלול {r.id}</strong><span>{fmtTime(r.started_at)}</span>
+          </button>)}
         </div>
+
+        {detRoute !== null && <>
+          <div className="analysis-bar">
+            {canValidate && <button className="primary big" onClick={()=>runAnalysis(detRoute)}
+              disabled={analysisJob && analysisJob.status==='running'}>
+              <ScanSearch size={18}/> ניתוח תמונות וחילוץ נכסים
+            </button>}
+            {analysisJob && <div className="analysis-progress">
+              <span>עובד: {analysisJob.processed}/{analysisJob.total}</span>
+              <span>נכסים שזוהו: {analysisJob.candidates ?? detCands.length}</span>
+              <span className={`chip ${analysisJob.status==='done'?'approved':'draft'}`}>
+                {analysisJob.status==='done'?'הושלם':'מנתח...'}</span>
+            </div>}
+          </div>
+
+          {!detCands.length && <div className="empty-note">
+            טרם נמצאו זיהויי תשתית במסלול זה. ניתן להפעיל ניתוח AI מקומי להפקת זיהויים ניסיוניים הדורשים אימות אנושי.
+          </div>}
+
+          <div className="detection-grid">
+            {detCands.map(c => <div className="detection-card" key={c.id}>
+              <AuthImg path={`/assets/candidates/${c.id}/image`} alt={c.category} loading="lazy"/>
+              <div className="detection-body">
+                <div className="detection-title">
+                  {canValidate
+                    ? <select value={c.category} onChange={e=>correctCand(c.id, e.target.value)}>
+                        {candSummary && Object.keys(candSummary.by_category||{}).map(k=>
+                          <option key={k} value={k}>{TRAINING_TYPE_LABEL[k]||categoryLabels[k]||k}</option>)}
+                        {!candSummary && <option value={c.category}>{TRAINING_TYPE_LABEL[c.category]||c.category}</option>}
+                      </select>
+                    : <strong>{TRAINING_TYPE_LABEL[c.category]||c.category}</strong>}
+                  <span className={`chip ${c.band==='high'?'approved':c.band==='medium'?'draft':''}`}>{Math.round(c.confidence*100)}%</span>
+                </div>
+                <div className="detection-meta">
+                  <span className="det-badge">{c.detector==='yolo'?'YOLO':'ניסיוני open-vocab'}</span>
+                  <span>{layerLabels[c.layer]||c.layer}</span>
+                  {c.latitude!=null ? <span>📍</span> : <span>ללא מיקום</span>}
+                </div>
+                {canValidate && <div className="detection-actions">
+                  <button className="approve" onClick={()=>decideCand(c.id,'approve')}><Check size={16}/> אשר → נכס</button>
+                  <button className="reject" onClick={()=>decideCand(c.id,'reject')}><X size={16}/> דחה</button>
+                </div>}
+              </div>
+            </div>)}
+          </div>
+        </>}
       </section>}
 
       {tab==='businesses' && <section>

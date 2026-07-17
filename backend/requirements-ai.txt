@@ -5,3 +5,5 @@ opencv-python-headless>=4.8
 # OCR: Tesseract (heb+ara+eng) — light (~64MB, no torch), install the engine
 # and language packs via apt (see setup-server.sh).
 pytesseract>=0.3.10
+# open-vocabulary detector (OWL-ViT) — ~1GB peak on CPU, loaded on demand
+transformers>=4.40

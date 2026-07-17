@@ -623,10 +623,15 @@ def candidates_summary(db: Session = Depends(get_db)):
 
 @router.get("/assets/candidates", dependencies=[DRIVER])
 def list_candidates(category: str | None = None, band: str | None = None,
-                    status: str | None = None, limit: int = 200, db: Session = Depends(get_db)):
+                    status: str | None = None, route_id: int | None = None,
+                    detector: str | None = None, limit: int = 200, db: Session = Depends(get_db)):
     stmt = select(CandidateAsset).order_by(CandidateAsset.confidence.desc())
     if category:
         stmt = stmt.where(CandidateAsset.proposed_category == category)
+    if route_id:
+        stmt = stmt.where(CandidateAsset.route_id == route_id)
+    if detector:
+        stmt = stmt.where(CandidateAsset.detector_name.like(f"{detector}%"))
     if band:
         stmt = stmt.where(CandidateAsset.confidence_band == band)
     if status:
@@ -794,10 +799,12 @@ def activate_model(model_id: int, db: Session = Depends(get_db)):
 
 @router.post("/analysis/routes/{route_id}", dependencies=[VALIDATOR])
 def analyze_route(route_id: int, db: Session = Depends(get_db)):
+    """Button-triggered: run open-vocabulary infrastructure detection (OWL-ViT)
+    over a route's images. Async — the worker picks up openvocab_processed=false."""
     if not db.get(Route, route_id):
         raise HTTPException(404, "Route not found")
     n = db.execute(update(CapturedImage).where(CapturedImage.route_id == route_id)
-                   .values(engine_processed=False)).rowcount
+                   .values(openvocab_processed=False)).rowcount
     job = AnalysisJob(job_type="route", target_route_id=route_id, status="queued", total=n)
     db.add(job); db.commit(); db.refresh(job)
     return {"job_id": job.id, "queued_images": n, "note": "worker analyzes asynchronously; poll the job"}
@@ -822,11 +829,15 @@ def analysis_job(job_id: int, db: Session = Depends(get_db)):
     if job.target_route_id:
         remaining = db.scalar(select(func.count()).select_from(CapturedImage)
                               .where(CapturedImage.route_id == job.target_route_id,
-                                     CapturedImage.engine_processed.is_(False))) or 0
+                                     CapturedImage.openvocab_processed.is_(False))) or 0
     processed = max(0, job.total - remaining)
+    candidates = db.scalar(select(func.count()).select_from(CandidateAsset)
+                           .where(CandidateAsset.route_id == job.target_route_id,
+                                  CandidateAsset.detector_name == "owlvit")) or 0
     status = "done" if remaining == 0 else "running"
     return {"job_id": job.id, "type": job.job_type, "route_id": job.target_route_id,
-            "total": job.total, "processed": processed, "remaining": remaining, "status": status}
+            "total": job.total, "processed": processed, "remaining": remaining,
+            "candidates": candidates, "status": status}
 
 @router.get("/analysis/results/{image_id}", dependencies=[DRIVER])
 def analysis_results(image_id: int, db: Session = Depends(get_db)):

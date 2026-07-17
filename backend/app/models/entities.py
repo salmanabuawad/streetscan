@@ -97,7 +97,8 @@ class CapturedImage(Base):
     blur_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     processed: Mapped[bool] = mapped_column(Boolean, default=False)       # legacy YOLO CLASS_MAP
     ocr_processed: Mapped[bool] = mapped_column(Boolean, default=False)   # Tesseract businesses
-    engine_processed: Mapped[bool] = mapped_column(Boolean, default=False)  # AssetAnalysisEngine
+    engine_processed: Mapped[bool] = mapped_column(Boolean, default=False)    # YOLO engine (continuous)
+    openvocab_processed: Mapped[bool] = mapped_column(Boolean, default=True)  # OWL-ViT (on-demand button)
 
 class AssetCategory(Base):
     """Config-driven category — NOT hard-coded in detection logic. Editable by

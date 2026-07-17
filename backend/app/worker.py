@@ -30,6 +30,24 @@ from app.engine.adapters.yolo import YoloDetector as EngineYoloAdapter
 from app.engine.adapters.ocr import LocalOCREngine
 from app.engine.hardware import detect_hardware
 
+
+def build_openvocab_engine(db):
+    """On-demand open-vocabulary engine (OWL-ViT) for infrastructure categories
+    that fixed-class YOLO can't see. ~1GB peak, loaded only when there's work."""
+    from app.engine.adapters.openvocab import OpenVocabDetector
+    cats = db.scalars(select(AssetCategory).where(
+        AssetCategory.active, AssetCategory.active_detector == "openvocab")).all()
+    prompts = [CategoryPrompt(
+        name=c.name, infrastructure_layer=c.infrastructure_layer,
+        prompts=c.detection_prompts.split("\n"), min_confidence=c.min_confidence,
+        active_detector=c.active_detector, requires_validation=c.requires_validation,
+    ) for c in cats]
+    return DefaultAssetAnalysisEngine(
+        detector=OpenVocabDetector(threshold=0.04), categories=prompts, ocr=LocalOCREngine(),
+        crops_dir=str(Path(settings.upload_dir) / "crops"),
+        annotated_dir=str(Path(settings.upload_dir) / "annotated"),
+    )
+
 BAND_HIGH, BAND_MED = 0.10, 0.06
 
 
@@ -366,10 +384,38 @@ def run_once(detector) -> int:
                 log.exception("engine analysis on image %s failed; skipping", image.id)
             image.engine_processed = True
             db.commit()
+
+        # On-demand OWL-ViT infrastructure detection (button-triggered). Loads
+        # the ~1GB model only when there's work; unloads when the queue drains
+        # so the shared box gets its memory back.
+        ov_pending = db.scalars(
+            select(CapturedImage).where(CapturedImage.openvocab_processed.is_(False))
+            .order_by(CapturedImage.id).limit(5)
+        ).all()
+        if ov_pending:
+            if _OVENGINE[0] is None:
+                log.info("loading OWL-ViT for on-demand infrastructure detection...")
+                _OVENGINE[0] = build_openvocab_engine(db)
+            for image in ov_pending:
+                try:
+                    n = process_image_engine(db, image, _OVENGINE[0])
+                    if n:
+                        log.info("image %s -> %d infrastructure candidates (owlvit)", image.id, n)
+                        total += n
+                except Exception:
+                    log.exception("owlvit analysis on image %s failed; skipping", image.id)
+                image.openvocab_processed = True
+                db.commit()
+        elif _OVENGINE[0] is not None:
+            import gc
+            _OVENGINE[0] = None
+            gc.collect()
+            log.info("OWL-ViT queue drained; model unloaded (memory freed)")
     return total
 
 
-_ENGINE: list = [None]   # lazily-built engine, reused across cycles
+_ENGINE: list = [None]     # lazily-built YOLO engine (continuous)
+_OVENGINE: list = [None]   # lazily-built OWL-ViT engine (on-demand, unloaded when idle)
 
 
 def blur_variance(frame) -> float:

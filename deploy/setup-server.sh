@@ -107,6 +107,8 @@ systemctl reload nginx
 echo "== bootstrap admin =="
 cd $DEPLOY_ROOT/backend
 sudo -u $APP_USER .venv/bin/python -m app.bootstrap_admin
+echo "== seed asset categories (config-driven engine) =="
+sudo -u $APP_USER .venv/bin/python -m app.seed_categories || true
 # detections.image_id may not have existed before create_all made captured_images
 sudo -u postgres psql $DB_NAME -c "ALTER TABLE IF EXISTS detections ADD COLUMN IF NOT EXISTS image_id INTEGER REFERENCES captured_images(id)"
 

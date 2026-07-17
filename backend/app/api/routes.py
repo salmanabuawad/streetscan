@@ -13,6 +13,7 @@ from app.api.deps import get_current_user, require_role, ROLE_RANK
 from app.models.entities import (
     Route, GPSPoint, VideoSegment, CapturedImage, Asset, Detection, Ticket, Business, TrainingSample,
     DetectionStatus, InfrastructureLayer, User, UserRole,
+    AssetCategory, CandidateAsset, ProposedAsset, TrainingFeedback, CandidateStatus,
 )
 from app.schemas.common import (
     RouteCreate, RouteOut, GPSPointCreate, AssetCreate, AssetOut, DetectionOut,
@@ -590,6 +591,114 @@ def _haversine_km(a: tuple[float, float], b: tuple[float, float]) -> float:
     h = sin((lat2 - lat1) / 2) ** 2 + cos(lat1) * cos(lat2) * sin((lon2 - lon1) / 2) ** 2
     return 2 * 6371 * asin(sqrt(h))
 
+
+# ===== Asset-analysis engine: categories + candidate assets =====
+
+@router.get("/asset-categories", dependencies=[DRIVER])
+def list_categories(db: Session = Depends(get_db)):
+    cats = db.scalars(select(AssetCategory).where(AssetCategory.active).order_by(AssetCategory.name)).all()
+    return [{"name": c.name, "layer": c.infrastructure_layer, "detector": c.active_detector,
+             "min_confidence": c.min_confidence, "department": c.department,
+             "prompts": c.detection_prompts.split("\n")} for c in cats]
+
+@router.get("/assets/candidates/summary", dependencies=[DRIVER])
+def candidates_summary(db: Session = Depends(get_db)):
+    total = db.scalar(select(func.count()).select_from(CandidateAsset)) or 0
+    by_band = dict(db.execute(select(CandidateAsset.confidence_band, func.count()).group_by(CandidateAsset.confidence_band)).all())
+    by_status = dict(db.execute(select(CandidateAsset.status, func.count()).group_by(CandidateAsset.status)).all())
+    by_cat = db.execute(
+        select(CandidateAsset.proposed_category, func.count()).group_by(CandidateAsset.proposed_category)
+        .order_by(func.count().desc())
+    ).all()
+    proposed = db.scalar(select(func.count()).select_from(ProposedAsset)) or 0
+    return {
+        "total_candidates": total,
+        "proposed_assets": proposed,
+        "by_band": by_band,
+        "by_status": {s.value if hasattr(s, "value") else s: n for s, n in by_status.items()},
+        "by_category": {c: n for c, n in by_cat},
+    }
+
+@router.get("/assets/candidates", dependencies=[DRIVER])
+def list_candidates(category: str | None = None, band: str | None = None,
+                    status: str | None = None, limit: int = 200, db: Session = Depends(get_db)):
+    stmt = select(CandidateAsset).order_by(CandidateAsset.confidence.desc())
+    if category:
+        stmt = stmt.where(CandidateAsset.proposed_category == category)
+    if band:
+        stmt = stmt.where(CandidateAsset.confidence_band == band)
+    if status:
+        try:
+            stmt = stmt.where(CandidateAsset.status == CandidateStatus(status))
+        except ValueError:
+            raise HTTPException(400, f"Unknown status '{status}'")
+    rows = db.scalars(stmt.limit(min(limit, 1000))).all()
+    return [_candidate_out(c) for c in rows]
+
+def _candidate_out(c: CandidateAsset) -> dict:
+    return {
+        "id": c.id, "proposed_asset_id": c.proposed_asset_id, "image_id": c.image_id,
+        "route_id": c.route_id, "category": c.proposed_category, "layer": c.infrastructure_layer,
+        "confidence": c.confidence, "band": c.confidence_band, "bbox": c.bbox,
+        "ocr_text": c.ocr_text, "condition": c.condition, "quality_score": c.quality_score,
+        "latitude": c.latitude, "longitude": c.longitude, "detector": c.detector_name,
+        "status": c.status.value if hasattr(c.status, "value") else c.status,
+    }
+
+@router.get("/assets/candidates/{cand_id}", dependencies=[DRIVER])
+def get_candidate(cand_id: int, db: Session = Depends(get_db)):
+    c = db.get(CandidateAsset, cand_id)
+    if not c:
+        raise HTTPException(404, "Candidate not found")
+    return _candidate_out(c)
+
+def _feedback(db, c, ftype, user, **kw):
+    db.add(TrainingFeedback(candidate_id=c.id, feedback_type=ftype, user_id=user.id, **kw))
+
+@router.post("/assets/candidates/{cand_id}/approve", dependencies=[VALIDATOR])
+def approve_candidate(cand_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    c = db.get(CandidateAsset, cand_id)
+    if not c:
+        raise HTTPException(404, "Candidate not found")
+    c.status = CandidateStatus.APPROVED
+    _feedback(db, c, "approve", user)
+    db.commit()
+    return _candidate_out(c)
+
+@router.post("/assets/candidates/{cand_id}/reject", dependencies=[VALIDATOR])
+def reject_candidate(cand_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    c = db.get(CandidateAsset, cand_id)
+    if not c:
+        raise HTTPException(404, "Candidate not found")
+    c.status = CandidateStatus.REJECTED
+    _feedback(db, c, "false_positive", user)
+    db.commit()
+    return _candidate_out(c)
+
+@router.post("/assets/candidates/{cand_id}/correct", dependencies=[VALIDATOR])
+def correct_candidate(cand_id: int, category: str = Form(...), db: Session = Depends(get_db),
+                      user: User = Depends(get_current_user)):
+    c = db.get(CandidateAsset, cand_id)
+    if not c:
+        raise HTTPException(404, "Candidate not found")
+    old = c.proposed_category
+    c.proposed_category = category
+    c.status = CandidateStatus.APPROVED
+    _feedback(db, c, "correct_category", user, corrected_category=category)
+    db.commit()
+    return {"id": c.id, "was": old, "now": category}
+
+@router.get("/assets/proposed", dependencies=[DRIVER])
+def list_proposed(category: str | None = None, db: Session = Depends(get_db)):
+    stmt = select(ProposedAsset).order_by(ProposedAsset.best_confidence.desc())
+    if category:
+        stmt = stmt.where(ProposedAsset.category == category)
+    rows = db.scalars(stmt.limit(1000)).all()
+    return [{"id": p.id, "category": p.category, "layer": p.infrastructure_layer,
+             "route_id": p.route_id, "observations": p.observation_count,
+             "best_confidence": p.best_confidence, "best_candidate_id": p.best_candidate_id,
+             "latitude": p.latitude, "longitude": p.longitude,
+             "status": p.status.value if hasattr(p.status, "value") else p.status} for p in rows]
 
 @router.get("/overview", dependencies=[DRIVER])
 def overview(db: Session = Depends(get_db)):

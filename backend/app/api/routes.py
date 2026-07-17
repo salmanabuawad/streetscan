@@ -15,6 +15,7 @@ from app.models.entities import (
     Route, GPSPoint, VideoSegment, CapturedImage, Asset, Detection, Ticket, Business, TrainingSample,
     DetectionStatus, InfrastructureLayer, User, UserRole,
     AssetCategory, CandidateAsset, ProposedAsset, TrainingFeedback, CandidateStatus, ModelVersion,
+    AnalysisJob,
 )
 from app.schemas.common import (
     RouteCreate, RouteOut, GPSPointCreate, AssetCreate, AssetOut, DetectionOut,
@@ -788,6 +789,93 @@ def activate_model(model_id: int, db: Session = Depends(get_db)):
     m.active = True
     db.commit()
     return {"activated": m.id, "name": m.name, "type": m.model_type}
+
+# ===== async analysis jobs (worker picks up engine_processed=false) =====
+
+@router.post("/analysis/routes/{route_id}", dependencies=[VALIDATOR])
+def analyze_route(route_id: int, db: Session = Depends(get_db)):
+    if not db.get(Route, route_id):
+        raise HTTPException(404, "Route not found")
+    n = db.execute(update(CapturedImage).where(CapturedImage.route_id == route_id)
+                   .values(engine_processed=False)).rowcount
+    job = AnalysisJob(job_type="route", target_route_id=route_id, status="queued", total=n)
+    db.add(job); db.commit(); db.refresh(job)
+    return {"job_id": job.id, "queued_images": n, "note": "worker analyzes asynchronously; poll the job"}
+
+@router.post("/analysis/reprocess", dependencies=[ADMIN])
+def analyze_reprocess(route_id: int | None = None, db: Session = Depends(get_db)):
+    stmt = update(CapturedImage).values(engine_processed=False)
+    if route_id:
+        stmt = stmt.where(CapturedImage.route_id == route_id)
+    n = db.execute(stmt).rowcount
+    job = AnalysisJob(job_type="reprocess", target_route_id=route_id, status="queued", total=n)
+    db.add(job); db.commit(); db.refresh(job)
+    return {"job_id": job.id, "queued_images": n}
+
+@router.get("/analysis/jobs/{job_id}", dependencies=[DRIVER])
+@router.get("/analysis/jobs/{job_id}/progress", dependencies=[DRIVER])
+def analysis_job(job_id: int, db: Session = Depends(get_db)):
+    job = db.get(AnalysisJob, job_id)
+    if not job:
+        raise HTTPException(404, "Job not found")
+    remaining = 0
+    if job.target_route_id:
+        remaining = db.scalar(select(func.count()).select_from(CapturedImage)
+                              .where(CapturedImage.route_id == job.target_route_id,
+                                     CapturedImage.engine_processed.is_(False))) or 0
+    processed = max(0, job.total - remaining)
+    status = "done" if remaining == 0 else "running"
+    return {"job_id": job.id, "type": job.job_type, "route_id": job.target_route_id,
+            "total": job.total, "processed": processed, "remaining": remaining, "status": status}
+
+@router.get("/analysis/results/{image_id}", dependencies=[DRIVER])
+def analysis_results(image_id: int, db: Session = Depends(get_db)):
+    rows = db.scalars(select(CandidateAsset).where(CandidateAsset.image_id == image_id)).all()
+    return {"image_id": image_id, "candidates": [_candidate_out(c) for c in rows]}
+
+@router.post("/assets/candidates/{cand_id}/merge", dependencies=[VALIDATOR])
+def merge_candidate(cand_id: int, into: int = Form(...), db: Session = Depends(get_db),
+                    user: User = Depends(get_current_user)):
+    c, target = db.get(CandidateAsset, cand_id), db.get(CandidateAsset, into)
+    if not c or not target:
+        raise HTTPException(404, "Candidate not found")
+    c.proposed_asset_id = target.proposed_asset_id
+    c.status = CandidateStatus.DUPLICATE_OBSERVATION
+    _feedback(db, c, "duplicate_correction", user)
+    db.commit()
+    return {"merged": cand_id, "into": into}
+
+@router.post("/assets/candidates/{cand_id}/split", dependencies=[VALIDATOR])
+def split_candidate(cand_id: int, db: Session = Depends(get_db)):
+    c = db.get(CandidateAsset, cand_id)
+    if not c:
+        raise HTTPException(404, "Candidate not found")
+    p = ProposedAsset(category=c.proposed_category, infrastructure_layer=c.infrastructure_layer,
+                      route_id=c.route_id, observation_count=1, best_confidence=c.confidence,
+                      best_candidate_id=c.id, latitude=c.latitude, longitude=c.longitude,
+                      status=CandidateStatus.PENDING_VALIDATION)
+    db.add(p); db.flush()
+    c.proposed_asset_id = p.id
+    db.commit()
+    return {"split": cand_id, "new_proposed_asset": p.id}
+
+@router.post("/assets/candidates/{cand_id}/link-existing", dependencies=[VALIDATOR])
+def link_existing(cand_id: int, asset_id: int = Form(...), db: Session = Depends(get_db),
+                  user: User = Depends(get_current_user)):
+    c = db.get(CandidateAsset, cand_id)
+    if not c:
+        raise HTTPException(404, "Candidate not found")
+    if not db.get(Asset, asset_id):
+        raise HTTPException(404, "GIS asset not found")
+    c.status = CandidateStatus.LINKED_TO_EXISTING
+    if c.proposed_asset_id:
+        p = db.get(ProposedAsset, c.proposed_asset_id)
+        if p:
+            p.gis_asset_id = asset_id
+            p.status = CandidateStatus.LINKED_TO_EXISTING
+    _feedback(db, c, "approve", user)
+    db.commit()
+    return {"candidate": cand_id, "linked_to_asset": asset_id}
 
 @router.get("/assets/proposed", dependencies=[DRIVER])
 def list_proposed(category: str | None = None, db: Session = Depends(get_db)):

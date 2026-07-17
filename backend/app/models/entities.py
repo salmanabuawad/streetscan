@@ -95,8 +95,9 @@ class CapturedImage(Base):
     speed_mps: Mapped[float | None] = mapped_column(Float, nullable=True)
     kind: Mapped[str] = mapped_column(String(30), default="interval")  # interval | stop_burst | manual
     blur_score: Mapped[float | None] = mapped_column(Float, nullable=True)
-    processed: Mapped[bool] = mapped_column(Boolean, default=False)       # YOLO
-    ocr_processed: Mapped[bool] = mapped_column(Boolean, default=False)   # Tesseract
+    processed: Mapped[bool] = mapped_column(Boolean, default=False)       # legacy YOLO CLASS_MAP
+    ocr_processed: Mapped[bool] = mapped_column(Boolean, default=False)   # Tesseract businesses
+    engine_processed: Mapped[bool] = mapped_column(Boolean, default=False)  # AssetAnalysisEngine
 
 class AssetCategory(Base):
     """Config-driven category — NOT hard-coded in detection logic. Editable by
@@ -204,6 +205,21 @@ class ModelVersion(Base):
     dataset_version: Mapped[str | None] = mapped_column(String(60), nullable=True)
     active: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class AnalysisJob(Base):
+    """Async analysis job over an image/route/reprocess request."""
+    __tablename__ = "analysis_jobs"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    job_type: Mapped[str] = mapped_column(String(30))            # route | image | reprocess
+    target_route_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="queued")  # queued|running|done|failed
+    total: Mapped[int] = mapped_column(Integer, default=0)
+    done: Mapped[int] = mapped_column(Integer, default=0)
+    candidates_created: Mapped[int] = mapped_column(Integer, default=0)
+    detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class Asset(Base):

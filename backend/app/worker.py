@@ -20,8 +20,66 @@ from sqlalchemy import select
 
 from app.core.config import settings
 from app.db.session import SessionLocal
-from app.models.entities import VideoSegment, CapturedImage, GPSPoint, Detection, Business, InfrastructureLayer
+from app.models.entities import (
+    VideoSegment, CapturedImage, GPSPoint, Detection, Business, InfrastructureLayer,
+    AssetCategory, CandidateAsset, CandidateStatus,
+)
 from app import ocr as ocr_mod
+from app.engine import DefaultAssetAnalysisEngine, CaptureContext, CategoryPrompt
+from app.engine.adapters.yolo import YoloDetector as EngineYoloAdapter
+from app.engine.adapters.ocr import LocalOCREngine
+from app.engine.hardware import detect_hardware
+
+BAND_HIGH, BAND_MED = 0.10, 0.06
+
+
+def _band(score: float) -> str:
+    return "high" if score >= BAND_HIGH else "medium" if score >= BAND_MED else "low"
+
+
+def build_engine(db):
+    """Compose the model-independent engine from DB config. Continuous on-server
+    analysis uses the CPU-safe YOLO adapter (COCO now; a registered municipal
+    model later drops in here unchanged)."""
+    cats = db.scalars(select(AssetCategory).where(AssetCategory.active)).all()
+    prompts = [CategoryPrompt(
+        name=c.name, infrastructure_layer=c.infrastructure_layer,
+        prompts=c.detection_prompts.split("\n"), min_confidence=c.min_confidence,
+        active_detector=c.active_detector, requires_validation=c.requires_validation,
+    ) for c in cats]
+    hw = detect_hardware()
+    if hw.warning:
+        log.info("hardware: %s", hw.warning)
+    detector = EngineYoloAdapter(model_path=settings.model_path)
+    return DefaultAssetAnalysisEngine(
+        detector=detector, categories=prompts, ocr=LocalOCREngine(),
+        crops_dir=str(Path(settings.upload_dir) / "crops"),
+        annotated_dir=str(Path(settings.upload_dir) / "annotated"),
+    )
+
+
+def process_image_engine(db, image: CapturedImage, engine) -> int:
+    ctx = CaptureContext(
+        image_id=image.id, route_id=image.route_id, capture_type=image.kind,
+        latitude=image.latitude, longitude=image.longitude, heading_deg=image.heading_deg,
+        quality_score=image.blur_score, source="image",
+    )
+    result = engine.analyze_image(image.filename, ctx)
+    for a in result.assets:
+        db.add(CandidateAsset(
+            image_id=image.id, route_id=image.route_id, image_sequence=image.id,
+            capture_type=image.kind, proposed_category=a.proposed_category,
+            infrastructure_layer=a.infrastructure_layer, confidence=a.confidence,
+            bbox=",".join(str(round(x, 1)) for x in a.box), crop_path=a.crop_path,
+            annotated_path=result.annotated_path, ocr_text=a.ocr_text,
+            ocr_language=a.ocr_language, ocr_confidence=a.ocr_confidence,
+            condition=a.condition, defect=a.defect, quality_score=image.blur_score,
+            detector_name=a.detector_name, detector_version=a.detector_version,
+            latitude=image.latitude, longitude=image.longitude,
+            confidence_band=_band(a.confidence), processing_ms=result.processing_ms,
+            status=CandidateStatus.PENDING_VALIDATION,
+        ))
+    return len(result.assets)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 log = logging.getLogger("streetscan.worker")
@@ -290,7 +348,28 @@ def run_once(detector) -> int:
                 log.exception("video OCR on segment %s failed; skipping", segment.id)
             segment.ocr_processed = True
             db.commit()
+
+        # Production asset-analysis engine: automatically analyze every new
+        # captured image and persist candidate assets (continuous, on-server).
+        if _ENGINE[0] is None:
+            _ENGINE[0] = build_engine(db)
+        for image in db.scalars(
+            select(CapturedImage).where(CapturedImage.engine_processed.is_(False))
+            .order_by(CapturedImage.id).limit(40)
+        ).all():
+            try:
+                n = process_image_engine(db, image, _ENGINE[0])
+                if n:
+                    log.info("image %s -> %d candidate assets (engine)", image.id, n)
+                    total += n
+            except Exception:
+                log.exception("engine analysis on image %s failed; skipping", image.id)
+            image.engine_processed = True
+            db.commit()
     return total
+
+
+_ENGINE: list = [None]   # lazily-built engine, reused across cycles
 
 
 def blur_variance(frame) -> float:

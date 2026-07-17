@@ -10,10 +10,11 @@ from app.core.config import settings
 from app.core.security import verify_password, hash_password, create_token
 from app.db.session import get_db
 from app.api.deps import get_current_user, require_role, ROLE_RANK
+from fastapi import Response
 from app.models.entities import (
     Route, GPSPoint, VideoSegment, CapturedImage, Asset, Detection, Ticket, Business, TrainingSample,
     DetectionStatus, InfrastructureLayer, User, UserRole,
-    AssetCategory, CandidateAsset, ProposedAsset, TrainingFeedback, CandidateStatus,
+    AssetCategory, CandidateAsset, ProposedAsset, TrainingFeedback, CandidateStatus, ModelVersion,
 )
 from app.schemas.common import (
     RouteCreate, RouteOut, GPSPointCreate, AssetCreate, AssetOut, DetectionOut,
@@ -687,6 +688,106 @@ def correct_candidate(cand_id: int, category: str = Form(...), db: Session = Dep
     _feedback(db, c, "correct_category", user, corrected_category=category)
     db.commit()
     return {"id": c.id, "was": old, "now": category}
+
+@router.get("/assets/candidates/{cand_id}/image", dependencies=[DRIVER])
+def candidate_image(cand_id: int, db: Session = Depends(get_db)):
+    """Serve the source frame with the candidate's box drawn — no crop upload
+    needed; the captured image already lives on the server."""
+    import cv2
+    c = db.get(CandidateAsset, cand_id)
+    if not c or not c.image_id:
+        raise HTTPException(404, "Candidate/image not found")
+    img_row = db.get(CapturedImage, c.image_id)
+    if not img_row or not Path(img_row.filename).is_file():
+        raise HTTPException(404, "Image file missing")
+    img = cv2.imread(img_row.filename)
+    if img is None:
+        raise HTTPException(404, "Unreadable image")
+    try:
+        x1, y1, x2, y2 = (int(float(v)) for v in c.bbox.split(","))
+        cv2.rectangle(img, (x1, y1), (x2, y2), (0, 200, 255), 4)
+        cv2.putText(img, f"{c.proposed_category} {c.confidence}", (x1, max(y1 - 8, 18)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 200, 255), 2)
+    except Exception:
+        pass
+    ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 82])
+    return Response(buf.tobytes(), media_type="image/jpeg")
+
+@router.get("/assets/candidates/export/geojson", dependencies=[VALIDATOR])
+def export_geojson(only_approved: bool = False, db: Session = Depends(get_db)):
+    """Located proposed assets as GeoJSON. Coordinates are approximate (phone
+    GPS) and never invented — assets without GPS are omitted."""
+    stmt = select(ProposedAsset).where(ProposedAsset.latitude.is_not(None))
+    if only_approved:
+        stmt = stmt.where(ProposedAsset.status == CandidateStatus.APPROVED)
+    feats = []
+    for p in db.scalars(stmt).all():
+        feats.append({
+            "type": "Feature",
+            "geometry": {"type": "Point", "coordinates": [p.longitude, p.latitude]},
+            "properties": {
+                "proposed_asset_id": p.id, "category": p.category, "layer": p.infrastructure_layer,
+                "observations": p.observation_count, "confidence": p.best_confidence,
+                "status": p.status.value if hasattr(p.status, "value") else p.status,
+                "route_id": p.route_id, "position": "approximate_phone_gps",
+            },
+        })
+    return {"type": "FeatureCollection", "features": feats}
+
+@router.post("/assets/training/export", dependencies=[VALIDATOR])
+def export_training_dataset(db: Session = Depends(get_db)):
+    """Turn human-validated candidates into a YOLO dataset (the self-improvement
+    loop). Uses approved candidates (corrected category wins) with a box."""
+    import cv2, shutil
+    out = Path(settings.upload_dir) / "training_export"
+    if out.exists():
+        shutil.rmtree(out)
+    (out / "images").mkdir(parents=True, exist_ok=True)
+    (out / "labels").mkdir(parents=True, exist_ok=True)
+    cands = db.scalars(select(CandidateAsset).where(CandidateAsset.status == CandidateStatus.APPROVED)).all()
+    classes = sorted({c.proposed_category for c in cands})
+    cid = {c: i for i, c in enumerate(classes)}
+    written = 0
+    for c in cands:
+        if not c.image_id:
+            continue
+        img_row = db.get(CapturedImage, c.image_id)
+        if not img_row or not Path(img_row.filename).is_file():
+            continue
+        img = cv2.imread(img_row.filename)
+        if img is None:
+            continue
+        h, w = img.shape[:2]
+        try:
+            x1, y1, x2, y2 = (float(v) for v in c.bbox.split(","))
+        except ValueError:
+            continue
+        cx, cy = ((x1 + x2) / 2 / w, (y1 + y2) / 2 / h)
+        bw, bh = (abs(x2 - x1) / w, abs(y2 - y1) / h)
+        stem = f"c{c.id}"
+        shutil.copy(img_row.filename, out / "images" / f"{stem}.jpg")
+        (out / "labels" / f"{stem}.txt").write_text(f"{cid[c.proposed_category]} {cx:.5f} {cy:.5f} {bw:.5f} {bh:.5f}\n")
+        written += 1
+    names = "\n".join(f"  {i}: {c}" for i, c in enumerate(classes))
+    (out / "data.yaml").write_text(f"path: {out}\ntrain: images\nval: images\nnames:\n{names}\n")
+    return {"exported_labels": written, "classes": classes, "dataset_path": str(out),
+            "format": "yolo", "note": "train with app.train_model pointing at this data.yaml"}
+
+@router.get("/models", dependencies=[VALIDATOR])
+def list_models(db: Session = Depends(get_db)):
+    return [{"id": m.id, "name": m.name, "type": m.model_type, "version": m.version,
+             "active": m.active, "metrics": m.metrics, "created_at": m.created_at}
+            for m in db.scalars(select(ModelVersion).order_by(ModelVersion.id.desc())).all()]
+
+@router.post("/models/{model_id}/activate", dependencies=[ADMIN])
+def activate_model(model_id: int, db: Session = Depends(get_db)):
+    m = db.get(ModelVersion, model_id)
+    if not m:
+        raise HTTPException(404, "Model not found")
+    db.execute(update(ModelVersion).where(ModelVersion.model_type == m.model_type).values(active=False))
+    m.active = True
+    db.commit()
+    return {"activated": m.id, "name": m.name, "type": m.model_type}
 
 @router.get("/assets/proposed", dependencies=[DRIVER])
 def list_proposed(category: str | None = None, db: Session = Depends(get_db)):

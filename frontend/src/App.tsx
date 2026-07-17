@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Camera, MapPin, Database, Route as RouteIcon, UploadCloud, StopCircle, PlayCircle, ScanSearch, Check, X, Film, Trash2, LogOut, Gauge, Compass, BatteryMedium, Wifi, WifiOff, ImageIcon, Store, GraduationCap } from 'lucide-react';
+import { Camera, MapPin, Database, Route as RouteIcon, UploadCloud, StopCircle, PlayCircle, ScanSearch, Check, X, Film, Trash2, LogOut, Gauge, Compass, BatteryMedium, Wifi, WifiOff, ImageIcon, Store, GraduationCap, Boxes } from 'lucide-react';
 import { api, getToken, setToken, fetchMediaUrl } from './services/api';
 import { queueSegment, queueGpsPoint, queueImage, pendingCounts, startAutoFlush } from './services/offlineQueue';
 import { AuthImg, AuthVideo } from './AuthMedia';
@@ -142,7 +142,7 @@ export default function App() {
   const [user, setUser] = useState<UserInfo | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
 
-  const [tab, setTab] = useState<'record'|'videos'|'detections'|'businesses'|'training'|'assets'|'dashboard'>('record');
+  const [tab, setTab] = useState<'record'|'videos'|'detections'|'businesses'|'candidates'|'training'|'assets'|'dashboard'>('record');
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
   const [assets, setAssets] = useState<Asset[]>([]);
   const [detections, setDetections] = useState<Detection[]>([]);
@@ -163,6 +163,10 @@ export default function App() {
   const [annImgUrl, setAnnImgUrl] = useState<string | null>(null);
   const [annBox, setAnnBox] = useState<Box | null>(null);
   const [annType, setAnnType] = useState('electricity_pole');
+  const [candidates, setCandidates] = useState<any[]>([]);
+  const [candSummary, setCandSummary] = useState<any>(null);
+  const [candCat, setCandCat] = useState<string>('');
+  const [candBand, setCandBand] = useState<string>('');
   const [routes, setRoutes] = useState<RouteInfo[]>([]);
   const [selectedRoute, setSelectedRoute] = useState<number | null>(null);
   const [segments, setSegments] = useState<Segment[]>([]);
@@ -235,6 +239,26 @@ export default function App() {
 
   async function loadTraining() {
     setTraining(await api('/training-samples'));
+  }
+
+  async function loadCandidates() {
+    setCandSummary(await api('/assets/candidates/summary'));
+    const q = new URLSearchParams();
+    if (candCat) q.set('category', candCat);
+    if (candBand) q.set('band', candBand);
+    q.set('limit', '60');
+    setCandidates(await api(`/assets/candidates?${q}`));
+  }
+
+  async function decideCandidate(id: number, action: 'approve'|'reject') {
+    await api(`/assets/candidates/${id}/${action}`, {method:'POST'});
+    setCandidates(cs => cs.filter(c => c.id !== id));
+  }
+
+  async function correctCandidate(id: number, category: string) {
+    const fd = new FormData(); fd.append('category', category);
+    await api(`/assets/candidates/${id}/correct`, {method:'POST', body: fd});
+    setCandidates(cs => cs.filter(c => c.id !== id));
   }
 
   function pickTrainFile(f: File | null) {
@@ -678,6 +702,9 @@ export default function App() {
         <Store size={18}/> עסקים
         {businesses.filter(b=>b.status==='draft').length > 0 && ` (${businesses.filter(b=>b.status==='draft').length})`}
       </button>
+      <button onClick={()=>{setTab('candidates'); loadCandidates().catch(console.error);}} className={tab==='candidates'?'active':''}>
+        <Boxes size={18}/> מועמדים
+      </button>
       <button onClick={()=>{setTab('training'); loadTraining().catch(console.error);}} className={tab==='training'?'active':''}>
         <GraduationCap size={18}/> תיוג לאימון
       </button>
@@ -849,6 +876,58 @@ export default function App() {
               {b.status==='draft' && canValidate && <div className="detection-actions">
                 <button className="approve" onClick={()=>decideBusiness(b.id,'approve')}><Check size={16}/> אישור</button>
                 <button className="reject" onClick={()=>decideBusiness(b.id,'reject')}><X size={16}/> דחייה</button>
+              </div>}
+            </div>
+          </div>)}
+        </div>
+      </section>}
+
+      {tab==='candidates' && <section>
+        <div className="section-head"><div>
+          <h2>מועמדי נכסים — אימות אנושי</h2>
+          <p>זיהויי draft ממנוע ה־AI (open-vocabulary). אשר/דחה/תקן — כל פעולה הופכת לדאטת אימון למודל העירוני.</p>
+        </div></div>
+
+        {candSummary && <div className="cc-tiles" style={{gridTemplateColumns:'repeat(4,1fr)',marginBottom:14}}>
+          <div className="cc-tile" style={{['--accent' as any]:'#2563eb'}}><div className="cc-tile-value">{candSummary.total_candidates}</div><div className="cc-tile-label">מועמדים</div></div>
+          <div className="cc-tile" style={{['--accent' as any]:'#8b5cf6'}}><div className="cc-tile-value">{candSummary.proposed_assets}</div><div className="cc-tile-label">נכסים מוצעים</div></div>
+          <div className="cc-tile" style={{['--accent' as any]:'#16a34a'}}><div className="cc-tile-value">{candSummary.by_band?.high||0}</div><div className="cc-tile-label">ביטחון גבוה</div></div>
+          <div className="cc-tile" style={{['--accent' as any]:'#f59e0b'}}><div className="cc-tile-value">{candSummary.by_band?.medium||0}</div><div className="cc-tile-label">ביטחון בינוני</div></div>
+        </div>}
+
+        <div className="cand-filters">
+          <select value={candBand} onChange={e=>setCandBand(e.target.value)}>
+            <option value="">כל רמות הביטחון</option><option value="high">גבוה</option>
+            <option value="medium">בינוני</option><option value="low">נמוך</option>
+          </select>
+          <select value={candCat} onChange={e=>setCandCat(e.target.value)}>
+            <option value="">כל הקטגוריות</option>
+            {candSummary && Object.entries(candSummary.by_category||{}).map(([c,n]:any)=>
+              <option key={c} value={c}>{TRAINING_TYPE_LABEL[c]||categoryLabels[c]||c} ({n})</option>)}
+          </select>
+          <button className="link-btn" onClick={()=>loadCandidates()}>סנן</button>
+        </div>
+
+        {!candidates.length && <div className="empty-note">אין מועמדים בסינון הזה. {candSummary?'בחר קטגוריה/רמת ביטחון אחרת.':'טוען...'}</div>}
+        <div className="detection-grid">
+          {candidates.map(c => <div className="detection-card" key={c.id}>
+            <AuthImg path={`/assets/candidates/${c.id}/image`} alt={c.category} loading="lazy"/>
+            <div className="detection-body">
+              <div className="detection-title">
+                <select value={c.category} onChange={e=>correctCandidate(c.id, e.target.value)}>
+                  {candSummary && Object.keys(candSummary.by_category||{}).map(k=>
+                    <option key={k} value={k}>{TRAINING_TYPE_LABEL[k]||categoryLabels[k]||k}</option>)}
+                </select>
+                <span className={`chip ${c.band==='high'?'approved':c.band==='medium'?'draft':''}`}>{Math.round(c.confidence*100)}%</span>
+              </div>
+              <div className="detection-meta">
+                <span>{layerLabels[c.layer]||c.layer}</span>
+                <span>מסלול {c.route_id}</span>
+                {c.latitude!=null ? <span>📍</span> : <span>ללא מיקום</span>}
+              </div>
+              {canValidate && <div className="detection-actions">
+                <button className="approve" onClick={()=>decideCandidate(c.id,'approve')}><Check size={16}/> אשר</button>
+                <button className="reject" onClick={()=>decideCandidate(c.id,'reject')}><X size={16}/> דחה</button>
               </div>}
             </div>
           </div>)}

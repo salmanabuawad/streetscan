@@ -153,6 +153,12 @@ export default function App() {
   const [editSample, setEditSample] = useState<{id:number;asset_type:string}|null>(null);
   const [editBox, setEditBox] = useState<Box | null>(null);
   const [editImgUrl, setEditImgUrl] = useState<string | null>(null);
+  const [captures, setCaptures] = useState<{id:number;latitude?:number;longitude?:number}[]>([]);
+  const [showCaptures, setShowCaptures] = useState(false);
+  const [annImg, setAnnImg] = useState<number | null>(null);
+  const [annImgUrl, setAnnImgUrl] = useState<string | null>(null);
+  const [annBox, setAnnBox] = useState<Box | null>(null);
+  const [annType, setAnnType] = useState('electricity_pole');
   const [routes, setRoutes] = useState<RouteInfo[]>([]);
   const [selectedRoute, setSelectedRoute] = useState<number | null>(null);
   const [segments, setSegments] = useState<Segment[]>([]);
@@ -276,6 +282,30 @@ export default function App() {
     }).catch(() => {});
     return () => { alive = false; if (url) URL.revokeObjectURL(url); };
   }, [editSample]);
+
+  useEffect(() => {
+    if (annImg == null) { setAnnImgUrl(null); return; }
+    let url: string | null = null, alive = true;
+    fetchMediaUrl(`/images/${annImg}/file`).then(u => {
+      if (alive) { url = u; setAnnImgUrl(u); } else URL.revokeObjectURL(u);
+    }).catch(() => {});
+    return () => { alive = false; if (url) URL.revokeObjectURL(url); };
+  }, [annImg]);
+
+  async function loadCaptures() {
+    setShowCaptures(true);
+    setCaptures(await api('/captured-images'));
+  }
+
+  async function saveAnnotation() {
+    if (annImg == null || !annBox) return;
+    await api(`/captured-images/${annImg}/annotate`, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ asset_type:annType, bbox_cx:annBox.cx, bbox_cy:annBox.cy, bbox_w:annBox.w, bbox_h:annBox.h }),
+    });
+    setAnnImg(null); setAnnBox(null);
+    loadTraining();
+  }
 
   async function saveSampleBox() {
     if (!editSample || !editBox) return;
@@ -827,6 +857,20 @@ export default function App() {
           <p>צלם או העלה תמונה של נכס (עמוד חשמל, ארון תקשורת, שוחה...), בחר סוג ותן שם. הדוגמאות ישמשו לאימון מודל זיהוי ייעודי.</p>
         </div></div>
 
+        <div className="train-mode-hint">
+          💡 הכי יעיל: סמן נכסים על <b>צילומי רחוב אמיתיים</b> (אותו דומיין שהמצלמה רואה). תקריבים לא עובדים על פוטג' הרכב.
+          <button type="button" className="link-btn" onClick={loadCaptures}>
+            {showCaptures ? 'רענן צילומים' : 'תייג מצילומי רחוב'}
+          </button>
+        </div>
+
+        {showCaptures && <div className="capture-strip">
+          {!captures.length && <span className="empty-note">אין צילומי רחוב זמינים.</span>}
+          {captures.map(c => <button key={c.id} className="capture-thumb" onClick={()=>{setAnnBox(null); setAnnImg(c.id);}}>
+            <AuthImg path={`/images/${c.id}/file`} alt="street" loading="lazy"/>
+          </button>)}
+        </div>}
+
         <form className="panel train-form" onSubmit={submitTrainingSample}>
           {!trainFile || !trainFileUrl
             ? <label className="train-photo">
@@ -883,6 +927,24 @@ export default function App() {
                 </div>
               </div>)}
             </div>}
+
+        {annImg != null && <div className="modal-backdrop" onClick={()=>setAnnImg(null)}>
+          <div className="modal" onClick={e=>e.stopPropagation()}>
+            <h3>תיוג נכס בצילום רחוב</h3>
+            {annImgUrl
+              ? <BBoxPicker src={annImgUrl} onChange={setAnnBox}/>
+              : <div className="media-loading">טוען תמונה...</div>}
+            <select value={annType} onChange={e=>setAnnType(e.target.value)} style={{marginTop:12,width:'100%'}}>
+              {TRAINING_TYPES.map(g => <optgroup key={g.layer} label={g.label}>
+                {g.types.map(([v,l]) => <option key={v} value={v}>{l}</option>)}
+              </optgroup>)}
+            </select>
+            <div className="modal-actions">
+              <button className="reject" onClick={()=>setAnnImg(null)}><X size={16}/> ביטול</button>
+              <button className="approve" disabled={!annBox} onClick={saveAnnotation}><Check size={16}/> שמור נכס</button>
+            </div>
+          </div>
+        </div>}
 
         {editSample && <div className="modal-backdrop" onClick={()=>setEditSample(null)}>
           <div className="modal" onClick={e=>e.stopPropagation()}>

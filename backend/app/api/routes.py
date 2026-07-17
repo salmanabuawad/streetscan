@@ -183,6 +183,49 @@ async def upload_image(
     db.refresh(image)
     return {"id": image.id, "size_bytes": len(content)}
 
+@router.get("/captured-images", response_model=list[ImageOut], dependencies=[DRIVER])
+def list_captured_images(limit: int = 200, db: Session = Depends(get_db)):
+    """All captured street stills, newest first — the in-domain frames to
+    annotate for training (proven far more useful than close-up photos)."""
+    return db.scalars(
+        select(CapturedImage).order_by(CapturedImage.id.desc()).limit(min(limit, 500))
+    ).all()
+
+@router.post("/captured-images/{image_id}/annotate", response_model=TrainingSampleOut, dependencies=[DRIVER])
+async def annotate_captured_image(
+    image_id: int,
+    payload: BBoxIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Turn a box drawn on a real street frame into a training sample (copies
+    the frame into the training set so it survives if the capture is deleted)."""
+    image = db.get(CapturedImage, image_id)
+    if not image:
+        raise HTTPException(404, "Image not found")
+    if not payload.asset_type:
+        raise HTTPException(400, "asset_type required")
+    src = Path(image.filename)
+    if not src.is_file():
+        raise HTTPException(404, "Image file missing")
+    train_dir = Path(settings.upload_dir) / "training"
+    train_dir.mkdir(parents=True, exist_ok=True)
+    target = train_dir / f"{uuid.uuid4().hex}{src.suffix or '.jpg'}"
+    target.write_bytes(src.read_bytes())
+    sample = TrainingSample(
+        filename=str(target),
+        asset_name=(payload.asset_name or payload.asset_type).strip(),
+        asset_type=payload.asset_type.strip(),
+        layer="other",
+        latitude=image.latitude, longitude=image.longitude, uploaded_by=user.id,
+        bbox_cx=payload.bbox_cx, bbox_cy=payload.bbox_cy,
+        bbox_w=payload.bbox_w, bbox_h=payload.bbox_h,
+    )
+    db.add(sample)
+    db.commit()
+    db.refresh(sample)
+    return sample
+
 @router.get("/routes/{route_id}/images", response_model=list[ImageOut], dependencies=[DRIVER])
 def list_route_images(route_id: int, db: Session = Depends(get_db)):
     if not db.get(Route, route_id):

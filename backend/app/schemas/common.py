@@ -104,6 +104,17 @@ class DetectionOut(BaseModel):
     created_at: datetime
     model_config = ConfigDict(from_attributes=True)
 
+class TrainingSampleOut(BaseModel):
+    id: int
+    asset_name: str
+    asset_type: str
+    layer: str
+    notes: str | None
+    latitude: float | None
+    longitude: float | None
+    created_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
 class BusinessOut(BaseModel):
     id: int
     route_id: int | None

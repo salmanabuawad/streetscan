@@ -127,6 +127,22 @@ class Detection(Base):
     snapshot_path: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
+class TrainingSample(Base):
+    """A human-labeled image for training a custom asset detector. The pilot
+    collects these (poles, cabinets, manholes...) until there are enough per
+    class to train a YOLO model that the worker can then load via MODEL_PATH."""
+    __tablename__ = "training_samples"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    filename: Mapped[str] = mapped_column(String(255))
+    asset_name: Mapped[str] = mapped_column(String(200))
+    asset_type: Mapped[str] = mapped_column(String(120))
+    layer: Mapped[str] = mapped_column(String(40), default="other")
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    uploaded_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
 class Business(Base):
     """A storefront/business recognized from a sign via OCR, pending validation.
     Approved businesses become part of the municipal point-of-interest layer."""

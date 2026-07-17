@@ -9,15 +9,15 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.security import verify_password, hash_password, create_token
 from app.db.session import get_db
-from app.api.deps import get_current_user, require_role
+from app.api.deps import get_current_user, require_role, ROLE_RANK
 from app.models.entities import (
-    Route, GPSPoint, VideoSegment, CapturedImage, Asset, Detection, Ticket, Business,
+    Route, GPSPoint, VideoSegment, CapturedImage, Asset, Detection, Ticket, Business, TrainingSample,
     DetectionStatus, InfrastructureLayer, User, UserRole,
 )
 from app.schemas.common import (
     RouteCreate, RouteOut, GPSPointCreate, AssetCreate, AssetOut, DetectionOut,
     TicketCreate, TicketOut, SegmentOut, ImageOut, LoginIn, LoginOut, UserCreate, UserOut,
-    BusinessOut, BusinessEdit,
+    BusinessOut, BusinessEdit, TrainingSampleOut,
 )
 
 router = APIRouter()
@@ -409,6 +409,66 @@ def reject_business(business_id: int, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(biz)
     return biz
+
+@router.post("/training-samples", response_model=TrainingSampleOut, dependencies=[DRIVER])
+async def add_training_sample(
+    asset_name: str = Form(...),
+    asset_type: str = Form(...),
+    layer: str = Form("other"),
+    notes: str | None = Form(None),
+    latitude: float | None = Form(None),
+    longitude: float | None = Form(None),
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    train_dir = Path(settings.upload_dir) / "training"
+    train_dir.mkdir(parents=True, exist_ok=True)
+    ext = Path(file.filename or "sample.jpg").suffix or ".jpg"
+    target = train_dir / f"{uuid.uuid4().hex}{ext}"
+    target.write_bytes(await file.read())
+    sample = TrainingSample(
+        filename=str(target), asset_name=asset_name.strip(), asset_type=asset_type.strip(),
+        layer=layer, notes=notes, latitude=latitude, longitude=longitude, uploaded_by=user.id,
+    )
+    db.add(sample)
+    db.commit()
+    db.refresh(sample)
+    return sample
+
+@router.get("/training-samples", response_model=list[TrainingSampleOut], dependencies=[DRIVER])
+def list_training_samples(db: Session = Depends(get_db)):
+    return db.scalars(select(TrainingSample).order_by(TrainingSample.created_at.desc()).limit(1000)).all()
+
+@router.get("/training-samples/summary", dependencies=[DRIVER])
+def training_summary(db: Session = Depends(get_db)):
+    rows = db.execute(
+        select(TrainingSample.asset_type, func.count()).group_by(TrainingSample.asset_type)
+    ).all()
+    return {"total": sum(c for _, c in rows), "by_type": {t: c for t, c in rows}}
+
+@router.get("/training-samples/{sample_id}/file", dependencies=[DRIVER])
+def training_sample_file(sample_id: int, db: Session = Depends(get_db)):
+    sample = db.get(TrainingSample, sample_id)
+    if not sample:
+        raise HTTPException(404, "Sample not found")
+    path = Path(sample.filename)
+    if not path.is_file():
+        raise HTTPException(404, "Image file missing")
+    return FileResponse(path, media_type="image/jpeg")
+
+@router.delete("/training-samples/{sample_id}", dependencies=[DRIVER])
+def delete_training_sample(sample_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    sample = db.get(TrainingSample, sample_id)
+    if not sample:
+        raise HTTPException(404, "Sample not found")
+    # a driver may remove their own samples; validators may remove any
+    if sample.uploaded_by != user.id and ROLE_RANK[user.role.value] < ROLE_RANK["validator"]:
+        raise HTTPException(403, "Can only delete your own samples")
+    Path(sample.filename).unlink(missing_ok=True)
+    db.delete(sample)
+    db.commit()
+    return {"deleted": sample_id}
 
 @router.get("/map-data", dependencies=[DRIVER])
 def map_data(db: Session = Depends(get_db)):

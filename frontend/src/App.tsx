@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Camera, MapPin, Database, Route as RouteIcon, UploadCloud, StopCircle, PlayCircle, ScanSearch, Check, X, Film, Trash2, LogOut, Gauge, Compass, BatteryMedium, Wifi, WifiOff, ImageIcon, Store } from 'lucide-react';
+import { Camera, MapPin, Database, Route as RouteIcon, UploadCloud, StopCircle, PlayCircle, ScanSearch, Check, X, Film, Trash2, LogOut, Gauge, Compass, BatteryMedium, Wifi, WifiOff, ImageIcon, Store, GraduationCap } from 'lucide-react';
 import { api, getToken, setToken } from './services/api';
 import { queueSegment, queueGpsPoint, queueImage, pendingCounts, startAutoFlush } from './services/offlineQueue';
 import { AuthImg, AuthVideo } from './AuthMedia';
@@ -69,6 +69,31 @@ type Business = {
   status:string; snapshot_path?:string;
 };
 const CATEGORY_OPTIONS = Object.keys(categoryLabels);
+
+// Asset types offered when labeling training images, grouped by layer.
+// value = machine label (used later as a YOLO class), then Hebrew UI label.
+const TRAINING_TYPES: { layer:string; label:string; types:[string,string][] }[] = [
+  { layer:'electricity', label:'חשמל', types:[
+    ['electricity_pole','עמוד חשמל'], ['transformer','שנאי'], ['electrical_cabinet','ארון חשמל'],
+    ['street_light','עמוד תאורה'], ['switchgear','לוח מיתוג'] ]},
+  { layer:'telecom', label:'תקשורת', types:[
+    ['telecom_pole','עמוד תקשורת'], ['telecom_cabinet','ארון תקשורת'],
+    ['junction_box','קופסת חיבורים'], ['fiber_marker','סמן סיב אופטי'] ]},
+  { layer:'water', label:'מים', types:[
+    ['hydrant','ברז כיבוי'], ['water_valve','מגוף מים'], ['water_meter','מד מים'] ]},
+  { layer:'sewage', label:'ביוב', types:[
+    ['manhole','שוחת ביוב'], ['sewer_cover','מכסה ביוב'] ]},
+  { layer:'drainage', label:'ניקוז', types:[ ['storm_drain','קולטן ניקוז'], ['culvert','מעביר מים'] ]},
+  { layer:'road', label:'כבישים', types:[ ['sign','תמרור'], ['speed_bump','פס האטה'], ['guard_rail','מעקה בטיחות'] ]},
+  { layer:'public_space', label:'מרחב ציבורי', types:[
+    ['garbage_container','מכל אשפה'], ['bench','ספסל'], ['bus_station','תחנת אוטובוס'] ]},
+];
+const TRAINING_TYPE_LABEL: Record<string,string> = Object.fromEntries(
+  TRAINING_TYPES.flatMap(g => g.types)
+);
+function trainingLayerOf(type: string): string {
+  return TRAINING_TYPES.find(g => g.types.some(([v]) => v === type))?.layer || 'other';
+}
 const kindLabels: Record<string,string> = { interval:'נסיעה איטית', stop_burst:'עצירה', manual:'ידני' };
 const layerLabels: Record<string,string> = {
   telecom:'תקשורת וטלפוניה', electricity:'חשמל', water:'מים', sewage:'ביוב',
@@ -112,11 +137,16 @@ export default function App() {
   const [user, setUser] = useState<UserInfo | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
 
-  const [tab, setTab] = useState<'record'|'videos'|'detections'|'businesses'|'assets'|'dashboard'>('record');
+  const [tab, setTab] = useState<'record'|'videos'|'detections'|'businesses'|'training'|'assets'|'dashboard'>('record');
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
   const [assets, setAssets] = useState<Asset[]>([]);
   const [detections, setDetections] = useState<Detection[]>([]);
   const [businesses, setBusinesses] = useState<Business[]>([]);
+  const [training, setTraining] = useState<{id:number;asset_name:string;asset_type:string;layer:string;latitude?:number;longitude?:number}[]>([]);
+  const [trainType, setTrainType] = useState('electricity_pole');
+  const [trainName, setTrainName] = useState('');
+  const [trainFile, setTrainFile] = useState<File | null>(null);
+  const [trainBusy, setTrainBusy] = useState(false);
   const [routes, setRoutes] = useState<RouteInfo[]>([]);
   const [selectedRoute, setSelectedRoute] = useState<number | null>(null);
   const [segments, setSegments] = useState<Segment[]>([]);
@@ -185,6 +215,46 @@ export default function App() {
     setAssets(await api<Asset[]>('/assets'));
     setDetections(await api<Detection[]>('/detections'));
     setBusinesses(await api<Business[]>('/businesses'));
+  }
+
+  async function loadTraining() {
+    setTraining(await api('/training-samples'));
+  }
+
+  async function submitTrainingSample(e: React.FormEvent) {
+    e.preventDefault();
+    if (!trainFile) return;
+    setTrainBusy(true);
+    try {
+      const fd = new FormData();
+      fd.append('asset_type', trainType);
+      fd.append('layer', trainingLayerOf(trainType));
+      fd.append('asset_name', trainName.trim() || TRAINING_TYPE_LABEL[trainType] || trainType);
+      if (posRef.current) {
+        fd.append('latitude', String(posRef.current.lat));
+        fd.append('longitude', String(posRef.current.lng));
+      } else {
+        // grab a one-shot fix so training samples get located even outside a route
+        await new Promise<void>(res => navigator.geolocation.getCurrentPosition(
+          p => { fd.append('latitude', String(p.coords.latitude)); fd.append('longitude', String(p.coords.longitude)); res(); },
+          () => res(), { enableHighAccuracy:true, timeout:5000 }));
+      }
+      fd.append('file', trainFile, trainFile.name || 'sample.jpg');
+      await api('/training-samples', { method:'POST', body: fd });
+      setTrainName('');
+      setTrainFile(null);
+      loadTraining();
+    } catch (err) {
+      alert(`שגיאה בהעלאה: ${String(err)}`);
+    } finally {
+      setTrainBusy(false);
+    }
+  }
+
+  async function deleteTrainingSample(id: number) {
+    if (!window.confirm('למחוק דוגמת אימון זו?')) return;
+    await api(`/training-samples/${id}`, {method:'DELETE'});
+    setTraining(t => t.filter(x => x.id !== id));
   }
 
   async function decideBusiness(id: number, action: 'approve'|'reject') {
@@ -538,6 +608,9 @@ export default function App() {
         <Store size={18}/> עסקים
         {businesses.filter(b=>b.status==='draft').length > 0 && ` (${businesses.filter(b=>b.status==='draft').length})`}
       </button>
+      <button onClick={()=>{setTab('training'); loadTraining().catch(console.error);}} className={tab==='training'?'active':''}>
+        <GraduationCap size={18}/> תיוג לאימון
+      </button>
       <button onClick={()=>setTab('assets')} className={tab==='assets'?'active':''}><Database size={18}/> נכסים</button>
       <button onClick={()=>setTab('dashboard')} className={tab==='dashboard'?'active':''}><MapPin size={18}/> לוח בקרה</button>
     </nav>
@@ -710,6 +783,61 @@ export default function App() {
             </div>
           </div>)}
         </div>
+      </section>}
+
+      {tab==='training' && <section>
+        <div className="section-head"><div>
+          <h2>תיוג נכסים לאימון AI</h2>
+          <p>צלם או העלה תמונה של נכס (עמוד חשמל, ארון תקשורת, שוחה...), בחר סוג ותן שם. הדוגמאות ישמשו לאימון מודל זיהוי ייעודי.</p>
+        </div></div>
+
+        <form className="panel train-form" onSubmit={submitTrainingSample}>
+          <label className="train-photo">
+            {trainFile
+              ? <img src={URL.createObjectURL(trainFile)} alt="preview"/>
+              : <div className="train-photo-empty"><Camera size={30}/><span>צלם / בחר תמונה</span></div>}
+            <input type="file" accept="image/*" capture="environment" hidden
+              onChange={e => setTrainFile(e.target.files?.[0] || null)}/>
+          </label>
+
+          <select value={trainType} onChange={e=>setTrainType(e.target.value)}>
+            {TRAINING_TYPES.map(g => <optgroup key={g.layer} label={g.label}>
+              {g.types.map(([v,l]) => <option key={v} value={v}>{l}</option>)}
+            </optgroup>)}
+          </select>
+          <input placeholder="שם/תיאור (לא חובה)" value={trainName} onChange={e=>setTrainName(e.target.value)}/>
+          <button className="primary big" type="submit" disabled={!trainFile || trainBusy}>
+            <UploadCloud size={18}/> {trainBusy ? 'מעלה...' : 'הוסף דוגמה'}
+          </button>
+        </form>
+
+        {training.length > 0 && (() => {
+          const counts: Record<string,number> = {};
+          training.forEach(t => { counts[t.asset_type] = (counts[t.asset_type]||0)+1; });
+          return <div className="train-counts">
+            {Object.entries(counts).sort((a,b)=>b[1]-a[1]).map(([t,c]) =>
+              <span key={t} className="chip">{TRAINING_TYPE_LABEL[t]||t}: {c}</span>)}
+          </div>;
+        })()}
+
+        {!training.length
+          ? <div className="empty-note">עוד לא נאספו דוגמאות. ככל שתאסוף יותר לכל סוג (מומלץ 50+), האימון יהיה מדויק יותר.</div>
+          : <div className="detection-grid">
+              {training.map(t => <div className="detection-card" key={t.id}>
+                <AuthImg path={`/training-samples/${t.id}/file`} alt={t.asset_type} loading="lazy"/>
+                <div className="detection-body">
+                  <div className="detection-title">
+                    <strong>{TRAINING_TYPE_LABEL[t.asset_type] || t.asset_type}</strong>
+                    <button className="icon-danger" title="מחק" onClick={()=>deleteTrainingSample(t.id)}><Trash2 size={15}/></button>
+                  </div>
+                  <div className="detection-meta">
+                    <span>{layerLabels[t.layer] || t.layer}</span>
+                    {t.asset_name && t.asset_name !== TRAINING_TYPE_LABEL[t.asset_type] && <span>{t.asset_name}</span>}
+                    {t.latitude != null ? <span>📍</span> : <span>ללא מיקום</span>}
+                  </div>
+                </div>
+              </div>)}
+            </div>}
       </section>}
 
       {tab==='assets' && <section>

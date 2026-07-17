@@ -53,6 +53,13 @@ th{color:#94a3b8}
 .detection-actions button{flex:1;display:inline-flex;justify-content:center;gap:6px;align-items:center;padding:9px 0;border:0;border-radius:10px;color:white;cursor:pointer}
 .approve{background:#16a34a}.reject{background:#dc2626}
 .biz-name-edit{width:100%;background:#0b1220;border:1px solid #334155;color:#e5e7eb;border-radius:8px;padding:7px 10px;font-size:15px;font-weight:600}
+.train-form{display:flex;flex-direction:column;gap:12px;padding:18px;margin-bottom:16px}
+.train-form select,.train-form input[type=text],.train-form input:not([type]){background:#0b1220;border:1px solid #334155;color:#e5e7eb;border-radius:10px;padding:11px 12px;font-size:15px}
+.train-photo{display:block;cursor:pointer;border:2px dashed #334155;border-radius:14px;overflow:hidden;background:#0b1220}
+.train-photo img{width:100%;max-height:300px;object-fit:contain;display:block;background:#000}
+.train-photo-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;color:#94a3b8;padding:40px 0}
+.train-form .big{justify-content:center}
+.train-counts{display:flex;gap:8px;flex-wrap:wrap;margin:4px 0 16px}
 .detection-title select{background:#0b1220;border:1px solid #334155;color:#cbd5e1;border-radius:8px;padding:5px 8px;font-size:13px}
 .empty-note{color:#94a3b8;padding:22px;text-align:center;background:#111827;border:1px solid #243244;border-radius:18px;margin-top:16px}
 .route-list{display:flex;gap:10px;flex-wrap:wrap;margin:16px 0}

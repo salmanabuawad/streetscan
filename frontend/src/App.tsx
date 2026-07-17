@@ -148,6 +148,15 @@ export default function App() {
     return () => window.removeEventListener('auth-expired', onExpired);
   }, []);
 
+  // Re-attach the camera stream to the preview element after tab switches
+  // (leaving the record tab unmounts the <video>; recording keeps running).
+  useEffect(() => {
+    if (tab === 'record' && recording && videoElRef.current && streamRef.current) {
+      videoElRef.current.srcObject = streamRef.current;
+      videoElRef.current.play().catch(() => {});
+    }
+  }, [tab, recording]);
+
   function logout() {
     if (recordingRef.current) { alert('עצור את המסלול לפני יציאה.'); return; }
     setToken(null);
@@ -487,34 +496,41 @@ export default function App() {
 
     <main>
       {tab==='record' && <section className="panel hero">
-        <div className="record-icon"><RouteIcon size={44}/></div>
-        <h2>מסלול צילום ומיפוי</h2>
-        <p>צילום אדפטיבי: וידאו בנסיעה, תמונות באיטיות, צילום מוגבר בעצירות.</p>
+        {!recording && <>
+          <div className="record-icon"><RouteIcon size={44}/></div>
+          <h2>מסלול צילום ומיפוי</h2>
+          <p>צילום אדפטיבי: וידאו בנסיעה, תמונות באיטיות, צילום מוגבר בעצירות.</p>
+          <div className="vehicle-form">
+            <input placeholder="שם רכב" value={vehicleName} onChange={e=>setVehicleName(e.target.value)}/>
+            <input placeholder="שם נהג" value={driverName} onChange={e=>setDriverName(e.target.value)}/>
+          </div>
+        </>}
 
-        {!recording && <div className="vehicle-form">
-          <input placeholder="שם רכב" value={vehicleName} onChange={e=>setVehicleName(e.target.value)}/>
-          <input placeholder="שם נהג" value={driverName} onChange={e=>setDriverName(e.target.value)}/>
-        </div>}
+        {/* dashcam view: live camera with HUD overlay (element stays mounted
+            even when idle so the ref exists when the route starts) */}
+        <div className="dashcam" style={{display: recording ? 'block' : 'none'}}>
+          <div className="dashcam-frame">
+            <video ref={videoElRef} muted playsInline autoPlay/>
+            <div className="dashcam-hud">
+              <span className="hud-chip live-dot">● REC {routeId ? `מסלול ${routeId}` : ''}</span>
+              <span className="hud-chip"><Gauge size={13}/> {speedKmh != null ? `${speedKmh} קמ"ש` : '—'}</span>
+              {headingUi != null && <span className="hud-chip"><Compass size={13}/> {headingUi}°</span>}
+              <span className="hud-chip"><ImageIcon size={13}/> {photoStats.taken}{photoStats.rejected ? ` (${photoStats.rejected}✕)` : ''}</span>
+              {battery != null && <span className="hud-chip"><BatteryMedium size={13}/> {battery}%</span>}
+              <span className="hud-chip">{online ? <Wifi size={13}/> : <WifiOff size={13}/>}</span>
+            </div>
+            {mode && <div className="dashcam-mode">{mode}</div>}
+          </div>
+        </div>
 
         <div className="coords">
           <span>מסלול: {routeId ?? 'לא פעיל'}</span>
           <span>GPS: {coords ? `${coords.lat.toFixed(6)}, ${coords.lng.toFixed(6)} (±${Math.round(coords.accuracy)}m)` : 'ממתין'}</span>
         </div>
 
-        {recording && <div className="capture-stats">
-          <span><Gauge size={15}/> {speedKmh != null ? `${speedKmh} קמ"ש` : '—'}</span>
-          {headingUi != null && <span><Compass size={15}/> {headingUi}°</span>}
-          {battery != null && <span><BatteryMedium size={15}/> {battery}%</span>}
-          <span>{online ? <Wifi size={15}/> : <WifiOff size={15}/>} {online ? 'מחובר' : 'לא מקוון'}</span>
-          <span><ImageIcon size={15}/> {photoStats.taken} תמונות{photoStats.rejected ? ` (${photoStats.rejected} מטושטשות נדחו)` : ''}</span>
-          {mode && <span className="chip draft">{mode}</span>}
-        </div>}
-
         {!recording
           ? <button className="primary big" onClick={startRoute}><PlayCircle/> התחל מסלול</button>
           : <button className="danger big" onClick={stopRoute}><StopCircle/> עצור מסלול</button>}
-
-        <video ref={videoElRef} className="capture-preview" muted playsInline/>
 
         <div className="notice">
           <UploadCloud size={20}/>

@@ -44,6 +44,9 @@ export default function MapView({ layerLabels, assetTypeLabels }: {
       maxZoom: 19,
       attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
     }).addTo(map);
+    // container uses aspect-ratio, so its height settles after layout — let
+    // Leaflet re-measure once the box has its final size.
+    setTimeout(() => map.invalidateSize(), 100);
 
     api<MapData>('/map-data').then(data => {
       const bounds: [number, number][] = [];

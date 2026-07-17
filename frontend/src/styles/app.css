@@ -32,7 +32,7 @@ button{font:inherit}
 table{width:100%;border-collapse:collapse}
 th,td{padding:13px;text-align:right;border-bottom:1px solid #243244}
 th{color:#94a3b8}
-.map-container{height:520px;border-radius:18px;overflow:hidden;border:1px solid #243244;background:#111827;z-index:0}
+.map-container{width:100%;max-width:680px;aspect-ratio:1/1;max-height:78vh;margin:0 auto;border-radius:18px;overflow:hidden;border:1px solid #243244;background:#111827;z-index:0}
 .map-legend{display:flex;gap:14px;flex-wrap:wrap;margin:14px 0;color:#cbd5e1;font-size:13px}
 .legend-item{display:inline-flex;align-items:center;gap:6px}
 .legend-item i{width:12px;height:12px;border-radius:50%;display:inline-block}

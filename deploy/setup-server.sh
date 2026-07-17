@@ -60,10 +60,15 @@ else
     echo "existing .env kept"
     [ "$DB_EXISTS" = "1" ] || sudo -u postgres psql -c "CREATE DATABASE $DB_NAME OWNER $DB_USER"
 fi
+# JWT secret (append once; never rotate silently — it would log everyone out)
+grep -q '^JWT_SECRET=' $DEPLOY_ROOT/backend/.env || \
+    echo "JWT_SECRET=$(openssl rand -hex 32)" >> $DEPLOY_ROOT/backend/.env
 
 echo "== schema migrations =="
 # create_all only creates missing tables; columns added later need ALTERs here.
 sudo -u postgres psql $DB_NAME -c "ALTER TABLE IF EXISTS video_segments ADD COLUMN IF NOT EXISTS orientation_hint INTEGER NOT NULL DEFAULT 0"
+sudo -u postgres psql $DB_NAME -c "ALTER TABLE IF EXISTS gps_points ADD COLUMN IF NOT EXISTS heading_deg DOUBLE PRECISION"
+sudo -u postgres psql $DB_NAME -c "ALTER TABLE IF EXISTS detections ADD COLUMN IF NOT EXISTS image_id INTEGER REFERENCES captured_images(id)" 2>/dev/null || true
 
 echo "== permissions =="
 mkdir -p $DEPLOY_ROOT/backend/uploads
@@ -91,6 +96,12 @@ cp $DEPLOY_ROOT/deploy/nginx/streetscan-tls.conf /etc/nginx/sites-available/$DOM
 ln -sf /etc/nginx/sites-available/$DOMAIN /etc/nginx/sites-enabled/$DOMAIN
 nginx -t
 systemctl reload nginx
+
+echo "== bootstrap admin =="
+cd $DEPLOY_ROOT/backend
+sudo -u $APP_USER .venv/bin/python -m app.bootstrap_admin
+# detections.image_id may not have existed before create_all made captured_images
+sudo -u postgres psql $DB_NAME -c "ALTER TABLE IF EXISTS detections ADD COLUMN IF NOT EXISTS image_id INTEGER REFERENCES captured_images(id)"
 
 echo "== health check =="
 sleep 2

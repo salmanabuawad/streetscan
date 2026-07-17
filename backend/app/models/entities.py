@@ -26,6 +26,21 @@ class DetectionStatus(str, enum.Enum):
     APPROVED = "approved"
     REJECTED = "rejected"
 
+class UserRole(str, enum.Enum):
+    DRIVER = "driver"
+    VALIDATOR = "validator"
+    ADMIN = "admin"
+
+class User(Base):
+    __tablename__ = "users"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    username: Mapped[str] = mapped_column(String(80), unique=True)
+    password_hash: Mapped[str] = mapped_column(String(120))
+    display_name: Mapped[str] = mapped_column(String(120))
+    role: Mapped[UserRole] = mapped_column(Enum(UserRole), default=UserRole.DRIVER)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
 class Route(Base):
     __tablename__ = "routes"
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -45,6 +60,7 @@ class GPSPoint(Base):
     longitude: Mapped[float] = mapped_column(Float)
     accuracy_m: Mapped[float | None] = mapped_column(Float, nullable=True)
     speed_mps: Mapped[float | None] = mapped_column(Float, nullable=True)
+    heading_deg: Mapped[float | None] = mapped_column(Float, nullable=True)
     captured_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     route: Mapped["Route"] = relationship(back_populates="gps_points")
 
@@ -62,6 +78,23 @@ class VideoSegment(Base):
     # the worker needs this hint to upright the frames before inference.
     orientation_hint: Mapped[int] = mapped_column(Integer, default=0)
     route: Mapped["Route"] = relationship(back_populates="video_segments")
+
+class CapturedImage(Base):
+    """High-resolution stills from the adaptive capture engine (slow speeds
+    and stop bursts) — sharper input than video frames for detection and OCR."""
+    __tablename__ = "captured_images"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    route_id: Mapped[int] = mapped_column(ForeignKey("routes.id", ondelete="CASCADE"))
+    filename: Mapped[str] = mapped_column(String(255))
+    size_bytes: Mapped[int] = mapped_column(Integer)
+    captured_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    heading_deg: Mapped[float | None] = mapped_column(Float, nullable=True)
+    speed_mps: Mapped[float | None] = mapped_column(Float, nullable=True)
+    kind: Mapped[str] = mapped_column(String(30), default="interval")  # interval | stop_burst | manual
+    blur_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    processed: Mapped[bool] = mapped_column(Boolean, default=False)
 
 class Asset(Base):
     __tablename__ = "assets"
@@ -83,6 +116,7 @@ class Detection(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     route_id: Mapped[int | None] = mapped_column(ForeignKey("routes.id"), nullable=True)
     video_segment_id: Mapped[int | None] = mapped_column(ForeignKey("video_segments.id"), nullable=True)
+    image_id: Mapped[int | None] = mapped_column(ForeignKey("captured_images.id"), nullable=True)
     proposed_asset_type: Mapped[str] = mapped_column(String(120))
     proposed_layer: Mapped[InfrastructureLayer] = mapped_column(Enum(InfrastructureLayer))
     confidence: Mapped[float] = mapped_column(Float)

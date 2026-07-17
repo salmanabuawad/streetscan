@@ -7,6 +7,10 @@ class Settings(BaseSettings):
     upload_dir: str = "./uploads"
     cors_origins: str = "http://localhost:5173"
 
+    # Auth
+    jwt_secret: str = "dev-secret-change-in-production"
+    token_ttl_s: int = 12 * 3600
+
     # AI worker
     model_path: str = "yolo11n.pt"          # swap for custom municipal-asset weights
     detection_confidence: float = 0.35

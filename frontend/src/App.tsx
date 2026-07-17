@@ -1,10 +1,22 @@
 import { useEffect, useRef, useState } from 'react';
-import { Camera, MapPin, Database, Route as RouteIcon, UploadCloud, StopCircle, PlayCircle, ScanSearch, Check, X, Film, Trash2 } from 'lucide-react';
-import { api, API_URL } from './services/api';
-import { queueSegment, queueGpsPoint, pendingCounts, startAutoFlush } from './services/offlineQueue';
+import { Camera, MapPin, Database, Route as RouteIcon, UploadCloud, StopCircle, PlayCircle, ScanSearch, Check, X, Film, Trash2, LogOut, Gauge, Compass, BatteryMedium, Wifi, WifiOff, ImageIcon } from 'lucide-react';
+import { api, getToken, setToken } from './services/api';
+import { queueSegment, queueGpsPoint, queueImage, pendingCounts, startAutoFlush } from './services/offlineQueue';
+import { AuthImg, AuthVideo } from './AuthMedia';
+import Login from './Login';
 import MapView from './MapView';
 
 const SEGMENT_MS = 15000;
+
+// Adaptive capture thresholds (m/s): 15 km/h = 4.17, 5 km/h = 1.39
+const FAST_MPS = 4.17;
+const SLOW_MPS = 1.39;
+const STOP_MPS = 0.5;
+const PHOTO_INTERVAL_SLOW_S = 6;   // 5-15 km/h
+const PHOTO_INTERVAL_CRAWL_S = 3;  // <5 km/h
+const STOP_BURST_COUNT = 5;
+const STOP_BURST_COOLDOWN_S = 45;
+const BLUR_THRESHOLD = 25;         // Laplacian variance below this = blurry
 
 function pickMimeType(): string {
   // iOS Safari records mp4; Chrome/Android record webm.
@@ -22,14 +34,6 @@ type Detection = {
   confidence:number; latitude?:number; longitude?:number; status:string;
   snapshot_path?:string; created_at:string;
 };
-
-const assetTypeLabels: Record<string,string> = {
-  fire_hydrant:'ברז כיבוי', stop_sign:'תמרור עצור', traffic_light:'רמזור',
-  bench:'ספסל', parking_meter:'מדחן', telephone_cabinet:'ארון תקשורת',
-  electricity_pole:'עמוד חשמל', sewage_manhole:'שוחת ביוב', water_valve:'ברז מים'
-};
-const statusLabels: Record<string,string> = { draft:'ממתין לאישור', approved:'אושר', rejected:'נדחה' };
-
 type RouteInfo = {
   id:number; vehicle_name:string; driver_name?:string;
   started_at:string; ended_at?:string; active:boolean;
@@ -37,6 +41,23 @@ type RouteInfo = {
 type Segment = {
   id:number; route_id:number; mime_type:string; size_bytes:number;
   captured_at:string; processed:boolean; orientation_hint:number;
+};
+type CapturedImageInfo = {
+  id:number; route_id:number; size_bytes:number; captured_at:string;
+  latitude?:number; longitude?:number; kind:string; blur_score?:number; processed:boolean;
+};
+type UserInfo = { id:number; username:string; display_name:string; role:string };
+
+const assetTypeLabels: Record<string,string> = {
+  fire_hydrant:'ברז כיבוי', stop_sign:'תמרור עצור', traffic_light:'רמזור',
+  bench:'ספסל', parking_meter:'מדחן', telephone_cabinet:'ארון תקשורת',
+  electricity_pole:'עמוד חשמל', sewage_manhole:'שוחת ביוב', water_valve:'ברז מים'
+};
+const statusLabels: Record<string,string> = { draft:'ממתין לאישור', approved:'אושר', rejected:'נדחה' };
+const kindLabels: Record<string,string> = { interval:'נסיעה איטית', stop_burst:'עצירה', manual:'ידני' };
+const layerLabels: Record<string,string> = {
+  telecom:'תקשורת וטלפוניה', electricity:'חשמל', water:'מים', sewage:'ביוב',
+  drainage:'ניקוז', tunnel:'תעלות ומעברים', road:'כבישים', public_space:'מרחב ציבורי'
 };
 
 function fmtTime(iso: string) {
@@ -48,12 +69,34 @@ function fmtSize(bytes: number) {
   return bytes > 1048576 ? `${(bytes/1048576).toFixed(1)}MB` : `${Math.round(bytes/1024)}KB`;
 }
 
-const layerLabels: Record<string,string> = {
-  telecom:'תקשורת וטלפוניה', electricity:'חשמל', water:'מים', sewage:'ביוב',
-  drainage:'ניקוז', tunnel:'תעלות ומעברים', road:'כבישים', public_space:'מרחב ציבורי'
-};
+// Laplacian variance on a downscaled grayscale copy — cheap blur estimate.
+async function blurScore(source: CanvasImageSource, w: number, h: number): Promise<number> {
+  const SW = 160, SH = Math.max(1, Math.round(160 * h / w));
+  const canvas = document.createElement('canvas');
+  canvas.width = SW; canvas.height = SH;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
+  ctx.drawImage(source, 0, 0, SW, SH);
+  const { data } = ctx.getImageData(0, 0, SW, SH);
+  const gray = new Float32Array(SW * SH);
+  for (let i = 0; i < SW * SH; i++) {
+    gray[i] = 0.299 * data[i*4] + 0.587 * data[i*4+1] + 0.114 * data[i*4+2];
+  }
+  let sum = 0, sumSq = 0, n = 0;
+  for (let y = 1; y < SH - 1; y++) {
+    for (let x = 1; x < SW - 1; x++) {
+      const i = y * SW + x;
+      const lap = 4 * gray[i] - gray[i - 1] - gray[i + 1] - gray[i - SW] - gray[i + SW];
+      sum += lap; sumSq += lap * lap; n++;
+    }
+  }
+  const mean = sum / n;
+  return sumSq / n - mean * mean;
+}
 
 export default function App() {
+  const [user, setUser] = useState<UserInfo | null>(null);
+  const [authChecked, setAuthChecked] = useState(false);
+
   const [tab, setTab] = useState<'record'|'videos'|'detections'|'assets'|'dashboard'>('record');
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
   const [assets, setAssets] = useState<Asset[]>([]);
@@ -61,22 +104,81 @@ export default function App() {
   const [routes, setRoutes] = useState<RouteInfo[]>([]);
   const [selectedRoute, setSelectedRoute] = useState<number | null>(null);
   const [segments, setSegments] = useState<Segment[]>([]);
+  const [routeImages, setRouteImages] = useState<CapturedImageInfo[]>([]);
   const [routeId, setRouteId] = useState<number | null>(null);
   const [recording, setRecording] = useState(false);
   const [status, setStatus] = useState('מוכן');
   const [coords, setCoords] = useState<{lat:number;lng:number;accuracy:number}|null>(null);
-  const [pending, setPending] = useState<{segments:number;gps:number}>({segments:0, gps:0});
+  const [pending, setPending] = useState<{segments:number;gps:number;images:number}>({segments:0, gps:0, images:0});
+  const [vehicleName, setVehicleName] = useState(localStorage.getItem('vehicle_name') || 'Garbage Truck 1');
+  const [driverName, setDriverName] = useState(localStorage.getItem('driver_name') || '');
+  const [speedKmh, setSpeedKmh] = useState<number | null>(null);
+  const [mode, setMode] = useState('');
+  const [headingUi, setHeadingUi] = useState<number | null>(null);
+  const [battery, setBattery] = useState<number | null>(null);
+  const [online, setOnline] = useState(navigator.onLine);
+  const [photoStats, setPhotoStats] = useState({taken:0, rejected:0});
+
   const mediaRecorder = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const videoElRef = useRef<HTMLVideoElement | null>(null);
   const watchId = useRef<number | null>(null);
   const recordingRef = useRef(false);
   const segmentTimer = useRef<number | null>(null);
+  const tickTimer = useRef<number | null>(null);
+  const speedRef = useRef<number | null>(null);
+  const headingRef = useRef<number | null>(null);
+  const posRef = useRef<{lat:number;lng:number;t:number}|null>(null);
+  const lastPhotoAt = useRef(0);
+  const stoppedMs = useRef(0);
+  const burstRemaining = useRef(0);
+  const lastBurstAt = useRef(0);
+  const captureBusy = useRef(false);
 
+  const canValidate = user != null && user.role !== 'driver';
+
+  // ---- auth ----
+  useEffect(() => {
+    if (!getToken()) { setAuthChecked(true); return; }
+    api<UserInfo>('/auth/me').then(setUser).catch(() => setToken(null)).finally(() => setAuthChecked(true));
+  }, []);
+  useEffect(() => {
+    const onExpired = () => setUser(null);
+    window.addEventListener('auth-expired', onExpired);
+    return () => window.removeEventListener('auth-expired', onExpired);
+  }, []);
+
+  function logout() {
+    if (recordingRef.current) { alert('עצור את המסלול לפני יציאה.'); return; }
+    setToken(null);
+    setUser(null);
+  }
+
+  // ---- data ----
   async function refresh() {
     setDashboard(await api<Dashboard>('/dashboard'));
     setAssets(await api<Asset[]>('/assets'));
     setDetections(await api<Detection[]>('/detections'));
   }
+
+  async function refreshPending() {
+    try { setPending(await pendingCounts()); } catch { /* IndexedDB unavailable */ }
+  }
+
+  useEffect(() => {
+    if (!user) return;
+    refresh().catch(console.error);
+    refreshPending();
+    const stopFlush = startAutoFlush(() => refreshPending());
+    const onNet = () => setOnline(navigator.onLine);
+    window.addEventListener('online', onNet);
+    window.addEventListener('offline', onNet);
+    (navigator as any).getBattery?.().then((b: any) => {
+      const set = () => setBattery(Math.round(b.level * 100));
+      set(); b.addEventListener('levelchange', set);
+    }).catch(() => {});
+    return () => { stopFlush(); window.removeEventListener('online', onNet); window.removeEventListener('offline', onNet); };
+  }, [user]);
 
   async function decideDetection(id: number, action: 'approve'|'reject') {
     await api(`/detections/${id}/${action}`, {method:'POST'});
@@ -91,6 +193,7 @@ export default function App() {
   async function selectRoute(id: number) {
     setSelectedRoute(id);
     setSegments(await api<Segment[]>(`/routes/${id}/segments`));
+    setRouteImages(await api<CapturedImageInfo[]>(`/routes/${id}/images`));
   }
 
   async function deleteSegment(id: number) {
@@ -100,12 +203,19 @@ export default function App() {
     refresh();
   }
 
+  async function deleteImage(id: number) {
+    if (!window.confirm('למחוק את התמונה? הקובץ יימחק מהשרת לצמיתות.')) return;
+    await api(`/images/${id}`, {method:'DELETE'});
+    setRouteImages(s => s.filter(x => x.id !== id));
+  }
+
   async function deleteRoute(id: number) {
-    if (!window.confirm(`למחוק את מסלול ${id} על כל מקטעי הווידאו ונקודות ה־GPS שלו? פעולה בלתי הפיכה.`)) return;
+    if (!window.confirm(`למחוק את מסלול ${id} על כל הווידאו, התמונות ונקודות ה־GPS שלו? פעולה בלתי הפיכה.`)) return;
     try {
       await api(`/routes/${id}`, {method:'DELETE'});
       setSelectedRoute(null);
       setSegments([]);
+      setRouteImages([]);
       setRoutes(await api<RouteInfo[]>('/routes'));
       refresh();
     } catch (e) {
@@ -113,31 +223,21 @@ export default function App() {
     }
   }
 
-  async function refreshPending() {
-    try { setPending(await pendingCounts()); } catch { /* IndexedDB unavailable */ }
-  }
-
-  useEffect(() => { refresh().catch(console.error) }, []);
-  useEffect(() => {
-    refreshPending();
-    return startAutoFlush(() => refreshPending());
-  }, []);
-
-  async function uploadOrQueueSegment(routeId: number, blob: Blob, mimeType: string, orientation: number) {
+  // ---- video segments ----
+  async function uploadOrQueueSegment(rid: number, blob: Blob, mimeType: string, orientation: number) {
     const capturedAt = new Date().toISOString();
     const ext = mimeType.includes('mp4') ? 'mp4' : 'webm';
     const filename = `segment-${Date.now()}.${ext}`;
     const fd = new FormData();
-    fd.append('route_id', String(routeId));
+    fd.append('route_id', String(rid));
     fd.append('captured_at', capturedAt);
     fd.append('orientation', String(orientation));
     fd.append('file', blob, filename);
     try {
-      const res = await fetch(`${API_URL}/video-segments`, { method:'POST', body:fd });
-      if (!res.ok) throw new Error(String(res.status));
+      await api(`/video-segments`, { method:'POST', body:fd });
       if (recordingRef.current) setStatus('מקליט ומעלה לשרת');
     } catch {
-      await queueSegment(routeId, capturedAt, blob, filename, orientation).catch(console.error);
+      await queueSegment(rid, capturedAt, blob, filename, orientation).catch(console.error);
       refreshPending();
       if (recordingRef.current) setStatus('אין חיבור — המקטע נשמר בדפדפן ויעלה אוטומטית');
     }
@@ -146,20 +246,18 @@ export default function App() {
   // Record one self-contained segment, then start the next one.
   // (A single recorder with a timeslice produces continuation chunks that are
   // not playable on their own, so each segment gets its own recorder.)
-  function recordNextSegment(stream: MediaStream, routeId: number, mimeType: string) {
+  function recordNextSegment(stream: MediaStream, rid: number, mimeType: string) {
     if (!recordingRef.current || !stream.active) return;
     const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
     mediaRecorder.current = recorder;
-    // Camera buffers keep their orientation while the phone rotates, so
-    // remember how the device is held during this segment.
     const orientation = (screen.orientation && screen.orientation.angle) || 0;
     const chunks: Blob[] = [];
     recorder.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
     recorder.onstop = () => {
       if (chunks.length) {
-        uploadOrQueueSegment(routeId, new Blob(chunks, { type: mimeType || 'video/webm' }), mimeType, orientation);
+        uploadOrQueueSegment(rid, new Blob(chunks, { type: mimeType || 'video/webm' }), mimeType, orientation);
       }
-      recordNextSegment(stream, routeId, mimeType);
+      recordNextSegment(stream, rid, mimeType);
     };
     recorder.start();
     segmentTimer.current = window.setTimeout(() => {
@@ -167,30 +265,147 @@ export default function App() {
     }, SEGMENT_MS);
   }
 
+  // ---- adaptive photo capture ----
+  async function capturePhoto(rid: number, kind: string) {
+    if (captureBusy.current) return;
+    const video = videoElRef.current;
+    if (!video || video.videoWidth === 0) return;
+    captureBusy.current = true;
+    try {
+      const w = video.videoWidth, h = video.videoHeight;
+      const score = await blurScore(video, w, h);
+      if (score < BLUR_THRESHOLD) {
+        setPhotoStats(s => ({...s, rejected: s.rejected + 1}));
+        return;
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = w; canvas.height = h;
+      canvas.getContext('2d')!.drawImage(video, 0, 0);
+      const blob = await new Promise<Blob | null>(r => canvas.toBlob(r, 'image/jpeg', 0.88));
+      if (!blob) return;
+      const fields: Record<string, string> = {
+        route_id: String(rid),
+        captured_at: new Date().toISOString(),
+        kind,
+        blur_score: score.toFixed(1),
+      };
+      if (posRef.current) {
+        fields.latitude = String(posRef.current.lat);
+        fields.longitude = String(posRef.current.lng);
+      }
+      if (headingRef.current != null) fields.heading_deg = headingRef.current.toFixed(1);
+      if (speedRef.current != null) fields.speed_mps = speedRef.current.toFixed(2);
+      const filename = `photo-${Date.now()}.jpg`;
+      try {
+        const fd = new FormData();
+        for (const [k, v] of Object.entries(fields)) fd.append(k, v);
+        fd.append('file', blob, filename);
+        await api('/images', { method:'POST', body: fd });
+      } catch {
+        await queueImage(blob, filename, fields).catch(console.error);
+        refreshPending();
+      }
+      setPhotoStats(s => ({...s, taken: s.taken + 1}));
+    } finally {
+      captureBusy.current = false;
+    }
+  }
+
+  // One tick per second: derive capture mode from speed and schedule photos.
+  function captureTick(rid: number) {
+    const speed = speedRef.current;
+    setSpeedKmh(speed != null ? Math.round(speed * 3.6) : null);
+    setHeadingUi(headingRef.current != null ? Math.round(headingRef.current) : null);
+    const now = Date.now();
+
+    // stop detection -> burst
+    if (speed != null && speed < STOP_MPS) {
+      stoppedMs.current += 1000;
+      if (stoppedMs.current >= 3000 && burstRemaining.current === 0 &&
+          now - lastBurstAt.current > STOP_BURST_COOLDOWN_S * 1000) {
+        burstRemaining.current = STOP_BURST_COUNT;
+        lastBurstAt.current = now;
+      }
+    } else {
+      stoppedMs.current = 0;
+    }
+
+    if (burstRemaining.current > 0) {
+      setMode('עצירה — צילום מוגבר');
+      burstRemaining.current--;
+      capturePhoto(rid, 'stop_burst');
+      return;
+    }
+
+    if (speed == null) { setMode('וידאו (ממתין למהירות GPS)'); return; }
+    if (speed > FAST_MPS) { setMode('נסיעה — וידאו'); return; }
+
+    const interval = speed > SLOW_MPS ? PHOTO_INTERVAL_SLOW_S : PHOTO_INTERVAL_CRAWL_S;
+    setMode(speed > SLOW_MPS ? 'איטי — וידאו + תמונות' : 'זחילה — תמונות בתדירות גבוהה');
+    if (now - lastPhotoAt.current >= interval * 1000) {
+      lastPhotoAt.current = now;
+      capturePhoto(rid, 'interval');
+    }
+  }
+
+  function onOrientation(e: DeviceOrientationEvent) {
+    const webkit = (e as any).webkitCompassHeading;
+    if (typeof webkit === 'number') headingRef.current = webkit;           // iOS: degrees from north, clockwise
+    else if (e.absolute && e.alpha != null) headingRef.current = (360 - e.alpha) % 360;  // Android
+  }
+
+  // ---- route lifecycle ----
   async function startRoute() {
     try {
       setStatus('פותח מסלול...');
+      localStorage.setItem('vehicle_name', vehicleName);
+      localStorage.setItem('driver_name', driverName);
       const route = await api<{id:number}>('/routes', {
         method:'POST', headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({vehicle_name:'Garbage Truck 1', driver_name:'Pilot'})
+        body:JSON.stringify({vehicle_name: vehicleName || 'Vehicle', driver_name: driverName || user?.display_name})
       });
       setRouteId(route.id);
 
       const stream = await navigator.mediaDevices.getUserMedia({
-        video:{ facingMode:{ideal:'environment'}, width:{ideal:1280}, height:{ideal:720} },
+        video:{ facingMode:{ideal:'environment'}, width:{ideal:1920}, height:{ideal:1080} },
         audio:false
       });
       streamRef.current = stream;
+      if (videoElRef.current) {
+        videoElRef.current.srcObject = stream;
+        videoElRef.current.play().catch(() => {});
+      }
       recordingRef.current = true;
       recordNextSegment(stream, route.id, pickMimeType());
+
+      // compass (iOS requires an explicit permission request from a user gesture)
+      const doe = DeviceOrientationEvent as any;
+      if (typeof doe?.requestPermission === 'function') {
+        try { if (await doe.requestPermission() === 'granted')
+          window.addEventListener('deviceorientation', onOrientation); } catch { /* denied */ }
+      } else {
+        window.addEventListener('deviceorientationabsolute', onOrientation as any);
+        window.addEventListener('deviceorientation', onOrientation);
+      }
 
       watchId.current = navigator.geolocation.watchPosition(
         async p => {
           const c = {lat:p.coords.latitude, lng:p.coords.longitude, accuracy:p.coords.accuracy};
           setCoords(c);
+          const t = Date.now();
+          // speed: prefer the GPS chip's value, fall back to distance/time
+          let sp = p.coords.speed;
+          if (sp == null && posRef.current && t > posRef.current.t) {
+            const dLat = (c.lat - posRef.current.lat) * 111320;
+            const dLng = (c.lng - posRef.current.lng) * 111320 * Math.cos(c.lat * Math.PI / 180);
+            sp = Math.hypot(dLat, dLng) / ((t - posRef.current.t) / 1000);
+          }
+          if (sp != null) speedRef.current = speedRef.current == null ? sp : 0.6 * speedRef.current + 0.4 * sp;
+          posRef.current = {lat:c.lat, lng:c.lng, t};
           const body = {
             route_id:route.id, latitude:c.lat, longitude:c.lng,
             accuracy_m:c.accuracy, speed_mps:p.coords.speed,
+            heading_deg: p.coords.heading ?? headingRef.current,
             captured_at:new Date().toISOString()
           };
           try {
@@ -205,8 +420,6 @@ export default function App() {
           }
         },
         err => {
-          // 1=denied (fatal until the user changes browser/OS settings),
-          // 2=unavailable, 3=timeout (watchPosition keeps retrying both).
           if (err.code === 1) setStatus('הרשאת מיקום נדחתה — אפשר מיקום ל־Safari בהגדרות iOS ובאתר (aA ← הגדרות אתר ← מיקום), ורענן');
           else if (err.code === 2) setStatus('אין אות GPS — ממשיך לנסות');
           else setStatus('ממתין לאות GPS...');
@@ -214,6 +427,8 @@ export default function App() {
         { enableHighAccuracy:true, maximumAge:3000, timeout:10000 }
       );
 
+      setPhotoStats({taken:0, rejected:0});
+      tickTimer.current = window.setInterval(() => captureTick(route.id), 1000);
       setRecording(true);
       setStatus('מקליט מסלול');
     } catch (e) {
@@ -225,15 +440,25 @@ export default function App() {
   async function stopRoute() {
     recordingRef.current = false;
     if (segmentTimer.current !== null) window.clearTimeout(segmentTimer.current);
+    if (tickTimer.current !== null) window.clearInterval(tickTimer.current);
+    window.removeEventListener('deviceorientation', onOrientation);
+    window.removeEventListener('deviceorientationabsolute', onOrientation as any);
     if (mediaRecorder.current?.state !== 'inactive') mediaRecorder.current?.stop(); // last segment still uploads via onstop
     streamRef.current?.getTracks().forEach(t => t.stop());
+    if (videoElRef.current) videoElRef.current.srcObject = null;
     if (watchId.current !== null) navigator.geolocation.clearWatch(watchId.current);
     if (routeId) await api(`/routes/${routeId}/stop`, {method:'POST'}).catch(console.error);
     setRecording(false);
     setRouteId(null);
+    speedRef.current = null;
+    setSpeedKmh(null);
+    setMode('');
     setStatus('המסלול הסתיים');
     refresh();
   }
+
+  if (!authChecked) return null;
+  if (!user) return <Login onLogin={u => setUser({id:0, username:u.username, display_name:u.display_name, role:u.role})}/>;
 
   return <div className="app-shell">
     <header className="topbar">
@@ -241,7 +466,12 @@ export default function App() {
         <h1>Buqata StreetScan</h1>
         <p>מיפוי תשתיות ומפגעים באמצעות רכב מועצה</p>
       </div>
-      <span className={`status ${recording ? 'live':''}`}>{status}</span>
+      <div className="topbar-side">
+        <span className={`status ${recording ? 'live':''}`}>{status}</span>
+        <button className="logout" onClick={logout} title={`${user.display_name} (${user.role})`}>
+          <LogOut size={15}/> {user.display_name}
+        </button>
+      </div>
     </header>
 
     <nav className="tabs">
@@ -259,27 +489,47 @@ export default function App() {
       {tab==='record' && <section className="panel hero">
         <div className="record-icon"><RouteIcon size={44}/></div>
         <h2>מסלול צילום ומיפוי</h2>
-        <p>הטלפון מצלם וידאו, שולח GPS ומעלה מקטעים קצרים לשרת.</p>
+        <p>צילום אדפטיבי: וידאו בנסיעה, תמונות באיטיות, צילום מוגבר בעצירות.</p>
+
+        {!recording && <div className="vehicle-form">
+          <input placeholder="שם רכב" value={vehicleName} onChange={e=>setVehicleName(e.target.value)}/>
+          <input placeholder="שם נהג" value={driverName} onChange={e=>setDriverName(e.target.value)}/>
+        </div>}
+
         <div className="coords">
           <span>מסלול: {routeId ?? 'לא פעיל'}</span>
           <span>GPS: {coords ? `${coords.lat.toFixed(6)}, ${coords.lng.toFixed(6)} (±${Math.round(coords.accuracy)}m)` : 'ממתין'}</span>
         </div>
+
+        {recording && <div className="capture-stats">
+          <span><Gauge size={15}/> {speedKmh != null ? `${speedKmh} קמ"ש` : '—'}</span>
+          {headingUi != null && <span><Compass size={15}/> {headingUi}°</span>}
+          {battery != null && <span><BatteryMedium size={15}/> {battery}%</span>}
+          <span>{online ? <Wifi size={15}/> : <WifiOff size={15}/>} {online ? 'מחובר' : 'לא מקוון'}</span>
+          <span><ImageIcon size={15}/> {photoStats.taken} תמונות{photoStats.rejected ? ` (${photoStats.rejected} מטושטשות נדחו)` : ''}</span>
+          {mode && <span className="chip draft">{mode}</span>}
+        </div>}
+
         {!recording
           ? <button className="primary big" onClick={startRoute}><PlayCircle/> התחל מסלול</button>
           : <button className="danger big" onClick={stopRoute}><StopCircle/> עצור מסלול</button>}
+
+        <video ref={videoElRef} className="capture-preview" muted playsInline/>
+
         <div className="notice">
           <UploadCloud size={20}/>
           <span>
-            הווידאו מפוצל למקטעים של 15 שניות. במקרה של ניתוק המקטעים נשמרים ב־IndexedDB ועולים אוטומטית כשהחיבור חוזר.
-            {(pending.segments > 0 || pending.gps > 0) && ` ממתינים להעלאה: ${pending.segments} מקטעים, ${pending.gps} נקודות GPS.`}
+            וידאו במקטעי 15 שניות + תמונות ברזולוציה גבוהה לפי מהירות. בניתוק הכל נשמר ב־IndexedDB ועולה אוטומטית.
+            {(pending.segments > 0 || pending.gps > 0 || pending.images > 0) &&
+              ` ממתינים להעלאה: ${pending.segments} מקטעים, ${pending.images} תמונות, ${pending.gps} נקודות GPS.`}
           </span>
         </div>
       </section>}
 
       {tab==='videos' && <section>
         <div className="section-head"><div>
-          <h2>וידאו מסלולים</h2>
-          <p>צפייה במקטעי הווידאו שהועלו מהשטח, לפי מסלול.</p>
+          <h2>וידאו ותמונות מסלולים</h2>
+          <p>צפייה בחומרים שהועלו מהשטח, לפי מסלול.</p>
         </div></div>
         {!routes.length && <div className="empty-note">אין עדיין מסלולים מוקלטים.</div>}
         <div className="route-list">
@@ -292,38 +542,51 @@ export default function App() {
             {r.active && <span className="chip draft">פעיל</span>}
           </button>)}
         </div>
-        {selectedRoute !== null && <div className="route-actions">
+        {selectedRoute !== null && canValidate && <div className="route-actions">
           <button className="delete-route" onClick={()=>deleteRoute(selectedRoute)}>
-            <Trash2 size={15}/> מחק מסלול {selectedRoute} ({segments.length} מקטעים)
+            <Trash2 size={15}/> מחק מסלול {selectedRoute} ({segments.length} מקטעים, {routeImages.length} תמונות)
           </button>
         </div>}
         {selectedRoute !== null && (segments.length
           ? <div className="video-grid">
               {segments.map(s => <div className="video-card" key={s.id}>
-                <video controls preload="metadata" playsInline
-                  src={`${API_URL}/video-segments/${s.id}/stream`}/>
+                <AuthVideo path={`/video-segments/${s.id}/stream`} controls preload="metadata" playsInline/>
                 <div className="video-meta">
                   <span>{fmtTime(s.captured_at)}</span>
                   <span>{fmtSize(s.size_bytes)}</span>
                   <span className={`chip ${s.processed?'approved':'draft'}`}>{s.processed?'עובד ב־AI':'בתור לעיבוד'}</span>
-                  <button className="icon-danger" title="מחק מקטע" onClick={()=>deleteSegment(s.id)}><Trash2 size={16}/></button>
+                  {canValidate && <button className="icon-danger" title="מחק מקטע" onClick={()=>deleteSegment(s.id)}><Trash2 size={16}/></button>}
                 </div>
               </div>)}
             </div>
           : <div className="empty-note">אין מקטעי וידאו במסלול הזה.</div>)}
+        {selectedRoute !== null && routeImages.length > 0 && <>
+          <h3 className="images-head">תמונות ({routeImages.length})</h3>
+          <div className="video-grid">
+            {routeImages.map(im => <div className="video-card" key={im.id}>
+              <AuthImg path={`/images/${im.id}/file`} alt={`image ${im.id}`} loading="lazy"/>
+              <div className="video-meta">
+                <span>{fmtTime(im.captured_at)}</span>
+                <span>{kindLabels[im.kind] || im.kind}</span>
+                <span className={`chip ${im.processed?'approved':'draft'}`}>{im.processed?'עובד ב־AI':'בתור'}</span>
+                {canValidate && <button className="icon-danger" title="מחק תמונה" onClick={()=>deleteImage(im.id)}><Trash2 size={16}/></button>}
+              </div>
+            </div>)}
+          </div>
+        </>}
       </section>}
 
       {tab==='detections' && <section>
         <div className="section-head"><div>
           <h2>זיהויי AI</h2>
-          <p>זיהויים אוטומטיים ממקטעי הווידאו. אישור הופך זיהוי לנכס במאגר; דחייה מסירה אותו.</p>
+          <p>זיהויים אוטומטיים מווידאו ותמונות. אישור הופך זיהוי לנכס במאגר; דחייה מסירה אותו.</p>
         </div></div>
         {!detections.length && <div className="empty-note">
-          אין עדיין זיהויים. ה־worker מעבד כל מקטע וידאו שעולה ומזהה נכסים גלויים (בשלב הפיילוט: ברזי כיבוי, תמרורים, רמזורים, ספסלים ומדחנים).
+          אין עדיין זיהויים. ה־worker מעבד כל וידאו ותמונה שעולים ומזהה נכסים גלויים (בשלב הפיילוט: ברזי כיבוי, תמרורים, רמזורים, ספסלים ומדחנים).
         </div>}
         <div className="detection-grid">
           {detections.map(d => <div className="detection-card" key={d.id}>
-            {d.snapshot_path && <img src={`${API_URL}/detections/${d.id}/snapshot`} alt={d.proposed_asset_type} loading="lazy"/>}
+            {d.snapshot_path && <AuthImg path={`/detections/${d.id}/snapshot`} alt={d.proposed_asset_type} loading="lazy"/>}
             <div className="detection-body">
               <div className="detection-title">
                 <strong>{assetTypeLabels[d.proposed_asset_type] || d.proposed_asset_type}</strong>
@@ -336,7 +599,7 @@ export default function App() {
                   ? <span>{d.latitude.toFixed(5)}, {d.longitude.toFixed(5)}</span>
                   : <span>ללא מיקום</span>}
               </div>
-              {d.status==='draft' && <div className="detection-actions">
+              {d.status==='draft' && canValidate && <div className="detection-actions">
                 <button className="approve" onClick={()=>decideDetection(d.id,'approve')}><Check size={16}/> אישור</button>
                 <button className="reject" onClick={()=>decideDetection(d.id,'reject')}><X size={16}/> דחייה</button>
               </div>}

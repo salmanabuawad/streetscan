@@ -2,6 +2,30 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict
 from app.models.entities import InfrastructureLayer, AssetStatus, DetectionStatus
 
+class LoginIn(BaseModel):
+    username: str
+    password: str
+
+class LoginOut(BaseModel):
+    token: str
+    username: str
+    display_name: str
+    role: str
+
+class UserCreate(BaseModel):
+    username: str
+    password: str
+    display_name: str
+    role: str = "driver"
+
+class UserOut(BaseModel):
+    id: int
+    username: str
+    display_name: str
+    role: str
+    active: bool
+    model_config = ConfigDict(from_attributes=True)
+
 class RouteCreate(BaseModel):
     vehicle_name: str
     driver_name: str | None = None
@@ -21,7 +45,22 @@ class GPSPointCreate(BaseModel):
     longitude: float
     accuracy_m: float | None = None
     speed_mps: float | None = None
+    heading_deg: float | None = None
     captured_at: datetime | None = None
+
+class ImageOut(BaseModel):
+    id: int
+    route_id: int
+    size_bytes: int
+    captured_at: datetime
+    latitude: float | None
+    longitude: float | None
+    heading_deg: float | None
+    speed_mps: float | None
+    kind: str
+    blur_score: float | None
+    processed: bool
+    model_config = ConfigDict(from_attributes=True)
 
 class SegmentOut(BaseModel):
     id: int
@@ -54,6 +93,7 @@ class DetectionOut(BaseModel):
     id: int
     route_id: int | None
     video_segment_id: int | None
+    image_id: int | None
     proposed_asset_type: str
     proposed_layer: InfrastructureLayer
     confidence: float

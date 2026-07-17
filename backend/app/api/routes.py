@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+﻿from datetime import datetime, timezone
 from pathlib import Path
 import uuid
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
@@ -7,11 +7,54 @@ from sqlalchemy import select, func, update
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.security import verify_password, hash_password, create_token
 from app.db.session import get_db
-from app.models.entities import Route, GPSPoint, VideoSegment, Asset, Detection, Ticket, DetectionStatus, InfrastructureLayer
-from app.schemas.common import RouteCreate, RouteOut, GPSPointCreate, AssetCreate, AssetOut, DetectionOut, TicketCreate, TicketOut, SegmentOut
+from app.api.deps import get_current_user, require_role
+from app.models.entities import (
+    Route, GPSPoint, VideoSegment, CapturedImage, Asset, Detection, Ticket,
+    DetectionStatus, InfrastructureLayer, User, UserRole,
+)
+from app.schemas.common import (
+    RouteCreate, RouteOut, GPSPointCreate, AssetCreate, AssetOut, DetectionOut,
+    TicketCreate, TicketOut, SegmentOut, ImageOut, LoginIn, LoginOut, UserCreate, UserOut,
+)
 
 router = APIRouter()
+
+DRIVER = Depends(require_role("driver"))
+VALIDATOR = Depends(require_role("validator"))
+ADMIN = Depends(require_role("admin"))
+
+@router.post("/auth/login", response_model=LoginOut)
+def login(payload: LoginIn, db: Session = Depends(get_db)):
+    user = db.scalar(select(User).where(User.username == payload.username))
+    if not user or not user.active or not verify_password(payload.password, user.password_hash):
+        raise HTTPException(401, "Wrong username or password")
+    return LoginOut(token=create_token(user.id, user.username, user.role.value),
+                    username=user.username, display_name=user.display_name, role=user.role.value)
+
+@router.get("/auth/me", response_model=UserOut)
+def me(user: User = Depends(get_current_user)):
+    return user
+
+@router.post("/users", response_model=UserOut, dependencies=[ADMIN])
+def create_user(payload: UserCreate, db: Session = Depends(get_db)):
+    if db.scalar(select(User).where(User.username == payload.username)):
+        raise HTTPException(409, "Username taken")
+    try:
+        role = UserRole(payload.role)
+    except ValueError:
+        raise HTTPException(400, f"Unknown role '{payload.role}'")
+    user = User(username=payload.username, password_hash=hash_password(payload.password),
+                display_name=payload.display_name, role=role)
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user
+
+@router.get("/users", response_model=list[UserOut], dependencies=[ADMIN])
+def list_users(db: Session = Depends(get_db)):
+    return db.scalars(select(User).order_by(User.id)).all()
 
 def to_naive_utc(dt: datetime) -> datetime:
     """Store everything as naive UTC so DB comparisons never mix aware/naive."""
@@ -33,7 +76,7 @@ def parse_client_timestamp(value: str | None) -> datetime:
 def health():
     return {"status": "ok"}
 
-@router.post("/routes", response_model=RouteOut)
+@router.post("/routes", response_model=RouteOut, dependencies=[DRIVER])
 def create_route(payload: RouteCreate, db: Session = Depends(get_db)):
     route = Route(vehicle_name=payload.vehicle_name, driver_name=payload.driver_name)
     db.add(route)
@@ -41,7 +84,7 @@ def create_route(payload: RouteCreate, db: Session = Depends(get_db)):
     db.refresh(route)
     return route
 
-@router.post("/routes/{route_id}/stop", response_model=RouteOut)
+@router.post("/routes/{route_id}/stop", response_model=RouteOut, dependencies=[DRIVER])
 def stop_route(route_id: int, db: Session = Depends(get_db)):
     route = db.get(Route, route_id)
     if not route:
@@ -52,11 +95,11 @@ def stop_route(route_id: int, db: Session = Depends(get_db)):
     db.refresh(route)
     return route
 
-@router.get("/routes", response_model=list[RouteOut])
+@router.get("/routes", response_model=list[RouteOut], dependencies=[DRIVER])
 def list_routes(db: Session = Depends(get_db)):
     return db.scalars(select(Route).order_by(Route.started_at.desc()).limit(100)).all()
 
-@router.post("/gps")
+@router.post("/gps", dependencies=[DRIVER])
 def add_gps_point(payload: GPSPointCreate, db: Session = Depends(get_db)):
     point = GPSPoint(
         route_id=payload.route_id,
@@ -64,13 +107,14 @@ def add_gps_point(payload: GPSPointCreate, db: Session = Depends(get_db)):
         longitude=payload.longitude,
         accuracy_m=payload.accuracy_m,
         speed_mps=payload.speed_mps,
+        heading_deg=payload.heading_deg,
         captured_at=to_naive_utc(payload.captured_at) if payload.captured_at else datetime.utcnow(),
     )
     db.add(point)
     db.commit()
     return {"id": point.id}
 
-@router.post("/video-segments")
+@router.post("/video-segments", dependencies=[DRIVER])
 async def upload_video_segment(
     route_id: int = Form(...),
     captured_at: str | None = Form(None),
@@ -104,7 +148,71 @@ async def upload_video_segment(
     db.refresh(segment)
     return {"id": segment.id, "filename": filename, "size_bytes": len(content)}
 
-@router.get("/routes/{route_id}/segments", response_model=list[SegmentOut])
+@router.post("/images", dependencies=[DRIVER])
+async def upload_image(
+    route_id: int = Form(...),
+    captured_at: str | None = Form(None),
+    latitude: float | None = Form(None),
+    longitude: float | None = Form(None),
+    heading_deg: float | None = Form(None),
+    speed_mps: float | None = Form(None),
+    kind: str = Form("interval"),
+    blur_score: float | None = Form(None),
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    route = db.get(Route, route_id)
+    if not route:
+        raise HTTPException(404, "Route not found")
+    img_dir = Path(settings.upload_dir) / str(route_id) / "images"
+    img_dir.mkdir(parents=True, exist_ok=True)
+    ext = Path(file.filename or "photo.jpg").suffix or ".jpg"
+    target = img_dir / f"{uuid.uuid4().hex}{ext}"
+    content = await file.read()
+    target.write_bytes(content)
+    image = CapturedImage(
+        route_id=route_id, filename=str(target), size_bytes=len(content),
+        captured_at=parse_client_timestamp(captured_at),
+        latitude=latitude, longitude=longitude, heading_deg=heading_deg,
+        speed_mps=speed_mps, blur_score=blur_score,
+        kind=kind if kind in ("interval", "stop_burst", "manual") else "interval",
+    )
+    db.add(image)
+    db.commit()
+    db.refresh(image)
+    return {"id": image.id, "size_bytes": len(content)}
+
+@router.get("/routes/{route_id}/images", response_model=list[ImageOut], dependencies=[DRIVER])
+def list_route_images(route_id: int, db: Session = Depends(get_db)):
+    if not db.get(Route, route_id):
+        raise HTTPException(404, "Route not found")
+    return db.scalars(
+        select(CapturedImage).where(CapturedImage.route_id == route_id)
+        .order_by(CapturedImage.captured_at)
+    ).all()
+
+@router.get("/images/{image_id}/file", dependencies=[DRIVER])
+def image_file(image_id: int, db: Session = Depends(get_db)):
+    image = db.get(CapturedImage, image_id)
+    if not image:
+        raise HTTPException(404, "Image not found")
+    path = Path(image.filename)
+    if not path.is_file():
+        raise HTTPException(404, "Image file missing")
+    return FileResponse(path, media_type="image/jpeg")
+
+@router.delete("/images/{image_id}", dependencies=[VALIDATOR])
+def delete_image(image_id: int, db: Session = Depends(get_db)):
+    image = db.get(CapturedImage, image_id)
+    if not image:
+        raise HTTPException(404, "Image not found")
+    db.execute(update(Detection).where(Detection.image_id == image_id).values(image_id=None))
+    Path(image.filename).unlink(missing_ok=True)
+    db.delete(image)
+    db.commit()
+    return {"deleted": image_id}
+
+@router.get("/routes/{route_id}/segments", response_model=list[SegmentOut], dependencies=[DRIVER])
 def list_route_segments(route_id: int, db: Session = Depends(get_db)):
     if not db.get(Route, route_id):
         raise HTTPException(404, "Route not found")
@@ -113,7 +221,7 @@ def list_route_segments(route_id: int, db: Session = Depends(get_db)):
         .order_by(VideoSegment.captured_at)
     ).all()
 
-@router.get("/video-segments/{segment_id}/stream")
+@router.get("/video-segments/{segment_id}/stream", dependencies=[DRIVER])
 def stream_video_segment(segment_id: int, db: Session = Depends(get_db)):
     segment = db.get(VideoSegment, segment_id)
     if not segment:
@@ -124,7 +232,7 @@ def stream_video_segment(segment_id: int, db: Session = Depends(get_db)):
     # FileResponse handles Range requests, so <video> seeking works.
     return FileResponse(path, media_type=segment.mime_type or "video/webm")
 
-@router.delete("/video-segments/{segment_id}")
+@router.delete("/video-segments/{segment_id}", dependencies=[VALIDATOR])
 def delete_video_segment(segment_id: int, db: Session = Depends(get_db)):
     segment = db.get(VideoSegment, segment_id)
     if not segment:
@@ -137,7 +245,7 @@ def delete_video_segment(segment_id: int, db: Session = Depends(get_db)):
     db.commit()
     return {"deleted": segment_id}
 
-@router.delete("/routes/{route_id}")
+@router.delete("/routes/{route_id}", dependencies=[VALIDATOR])
 def delete_route(route_id: int, db: Session = Depends(get_db)):
     route = db.get(Route, route_id)
     if not route:
@@ -150,17 +258,28 @@ def delete_route(route_id: int, db: Session = Depends(get_db)):
     if segment_ids:
         db.execute(update(Detection).where(Detection.video_segment_id.in_(segment_ids))
                    .values(video_segment_id=None))
+    image_ids = db.scalars(
+        select(CapturedImage.id).where(CapturedImage.route_id == route_id)
+    ).all()
+    if image_ids:
+        db.execute(update(Detection).where(Detection.image_id.in_(image_ids))
+                   .values(image_id=None))
     db.execute(update(Detection).where(Detection.route_id == route_id)
                .values(route_id=None))
     for filename in db.scalars(
         select(VideoSegment.filename).where(VideoSegment.route_id == route_id)
     ):
         Path(filename).unlink(missing_ok=True)
+    for filename in db.scalars(
+        select(CapturedImage.filename).where(CapturedImage.route_id == route_id)
+    ):
+        Path(filename).unlink(missing_ok=True)
+    db.execute(CapturedImage.__table__.delete().where(CapturedImage.route_id == route_id))
     db.delete(route)  # cascades gps_points + video_segments
     db.commit()
     return {"deleted": route_id, "segments_deleted": len(segment_ids)}
 
-@router.post("/assets", response_model=AssetOut)
+@router.post("/assets", response_model=AssetOut, dependencies=[VALIDATOR])
 def create_asset(payload: AssetCreate, db: Session = Depends(get_db)):
     asset = Asset(**payload.model_dump())
     db.add(asset)
@@ -168,7 +287,7 @@ def create_asset(payload: AssetCreate, db: Session = Depends(get_db)):
     db.refresh(asset)
     return asset
 
-@router.get("/assets", response_model=list[AssetOut])
+@router.get("/assets", response_model=list[AssetOut], dependencies=[DRIVER])
 def list_assets(layer: str | None = None, db: Session = Depends(get_db)):
     stmt = select(Asset).order_by(Asset.created_at.desc())
     if layer:
@@ -178,11 +297,11 @@ def list_assets(layer: str | None = None, db: Session = Depends(get_db)):
             raise HTTPException(400, f"Unknown layer '{layer}'")
     return db.scalars(stmt.limit(500)).all()
 
-@router.get("/detections", response_model=list[DetectionOut])
+@router.get("/detections", response_model=list[DetectionOut], dependencies=[DRIVER])
 def list_detections(db: Session = Depends(get_db)):
     return db.scalars(select(Detection).order_by(Detection.created_at.desc()).limit(500)).all()
 
-@router.post("/detections/{detection_id}/approve", response_model=AssetOut)
+@router.post("/detections/{detection_id}/approve", response_model=AssetOut, dependencies=[VALIDATOR])
 def approve_detection(detection_id: int, db: Session = Depends(get_db)):
     detection = db.get(Detection, detection_id)
     if not detection:
@@ -201,7 +320,7 @@ def approve_detection(detection_id: int, db: Session = Depends(get_db)):
     db.refresh(asset)
     return asset
 
-@router.get("/detections/{detection_id}/snapshot")
+@router.get("/detections/{detection_id}/snapshot", dependencies=[DRIVER])
 def detection_snapshot(detection_id: int, db: Session = Depends(get_db)):
     detection = db.get(Detection, detection_id)
     if not detection or not detection.snapshot_path:
@@ -211,7 +330,7 @@ def detection_snapshot(detection_id: int, db: Session = Depends(get_db)):
         raise HTTPException(404, "Snapshot file missing")
     return FileResponse(path, media_type="image/jpeg")
 
-@router.post("/detections/{detection_id}/reject", response_model=DetectionOut)
+@router.post("/detections/{detection_id}/reject", response_model=DetectionOut, dependencies=[VALIDATOR])
 def reject_detection(detection_id: int, db: Session = Depends(get_db)):
     detection = db.get(Detection, detection_id)
     if not detection:
@@ -221,7 +340,7 @@ def reject_detection(detection_id: int, db: Session = Depends(get_db)):
     db.refresh(detection)
     return detection
 
-@router.post("/tickets", response_model=TicketOut)
+@router.post("/tickets", response_model=TicketOut, dependencies=[VALIDATOR])
 def create_ticket(payload: TicketCreate, db: Session = Depends(get_db)):
     if payload.asset_id and not db.get(Asset, payload.asset_id):
         raise HTTPException(404, "Asset not found")
@@ -233,11 +352,11 @@ def create_ticket(payload: TicketCreate, db: Session = Depends(get_db)):
     db.refresh(ticket)
     return ticket
 
-@router.get("/tickets", response_model=list[TicketOut])
+@router.get("/tickets", response_model=list[TicketOut], dependencies=[DRIVER])
 def list_tickets(db: Session = Depends(get_db)):
     return db.scalars(select(Ticket).order_by(Ticket.created_at.desc()).limit(500)).all()
 
-@router.get("/map-data")
+@router.get("/map-data", dependencies=[DRIVER])
 def map_data(db: Session = Depends(get_db)):
     """Everything the GIS map needs in one call: located assets, located
     detections, and per-route GPS tracks."""
@@ -276,7 +395,7 @@ def map_data(db: Session = Depends(get_db)):
         "tracks": tracks,
     }
 
-@router.get("/dashboard")
+@router.get("/dashboard", dependencies=[DRIVER])
 def dashboard(db: Session = Depends(get_db)):
     asset_count = db.scalar(select(func.count()).select_from(Asset)) or 0
     route_count = db.scalar(select(func.count()).select_from(Route)) or 0

@@ -20,7 +20,7 @@ from sqlalchemy import select
 
 from app.core.config import settings
 from app.db.session import SessionLocal
-from app.models.entities import VideoSegment, GPSPoint, Detection, InfrastructureLayer
+from app.models.entities import VideoSegment, CapturedImage, GPSPoint, Detection, InfrastructureLayer
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 log = logging.getLogger("streetscan.worker")
@@ -193,8 +193,35 @@ def process_segment(db, segment: VideoSegment, detector) -> int:
     return created
 
 
+def process_image(db, image: CapturedImage, detector) -> int:
+    """High-res stills come with their own GPS/heading, so detection is a
+    single inference — no clustering or time matching needed."""
+    frame = cv2.imread(image.filename)
+    if frame is None:
+        log.warning("cannot read image %s (%s)", image.id, image.filename)
+        return 0
+    created = 0
+    for name, conf, box in detector.detect(frame):
+        if name not in CLASS_MAP or conf < settings.detection_confidence:
+            continue
+        layer, asset_type = CLASS_MAP[name]
+        snapshot = save_snapshot(frame, box, f"{asset_type} {conf:.2f}")
+        db.add(Detection(
+            route_id=image.route_id,
+            image_id=image.id,
+            proposed_asset_type=asset_type,
+            proposed_layer=InfrastructureLayer(layer),
+            confidence=round(conf, 3),
+            latitude=image.latitude,
+            longitude=image.longitude,
+            snapshot_path=snapshot,
+        ))
+        created += 1
+    return created
+
+
 def run_once(detector) -> int:
-    """Process all pending segments; returns number of detections created."""
+    """Process all pending segments and images; returns detections created."""
     total = 0
     with SessionLocal() as db:
         pending = db.scalars(
@@ -209,6 +236,20 @@ def run_once(detector) -> int:
             except Exception:
                 log.exception("segment %s failed; skipping", segment.id)
             segment.processed = True  # never reprocess a poison segment
+            db.commit()
+
+        pending_images = db.scalars(
+            select(CapturedImage).where(CapturedImage.processed.is_(False))
+            .order_by(CapturedImage.id).limit(50)
+        ).all()
+        for image in pending_images:
+            try:
+                n = process_image(db, image, detector)
+                log.info("image %s -> %d detections", image.id, n)
+                total += n
+            except Exception:
+                log.exception("image %s failed; skipping", image.id)
+            image.processed = True
             db.commit()
     return total
 

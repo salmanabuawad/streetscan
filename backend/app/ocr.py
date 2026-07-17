@@ -36,7 +36,11 @@ CATEGORY_KEYWORDS: dict[str, list[str]] = {
 
 # Text this short or this un-word-like is sign noise, not a business name.
 MIN_TOKEN_LEN = 2
-MIN_LINE_CONF = 45.0
+MIN_LINE_CONF = 55.0
+MIN_NAME_LEN = 3          # a real shop name has at least a few characters
+MIN_NAME_LETTERS = 2     # ...and actual letters, not just digits/symbols
+
+LETTER_RE = re.compile(r"[A-Za-z֐-׿؀-ۿ]")
 
 
 def detect_languages(text: str) -> str:
@@ -101,7 +105,8 @@ def run_ocr(image_path: str) -> dict | None:
     # Best line = largest text with decent confidence (the shop's main sign).
     best = max(lines.values(), key=lambda e: e["height"] * (sum(e["confs"]) / len(e["confs"])))
     name = " ".join(best["words"]).strip()
-    if len(name) < 2:
+    # Reject noise: too short, or lacking real letters (pure digits/symbols).
+    if len(name) < MIN_NAME_LEN or len(LETTER_RE.findall(name)) < MIN_NAME_LETTERS:
         return None
     all_text = " | ".join(" ".join(e["words"]) for e in lines.values())
     mean_conf = sum(best["confs"]) / len(best["confs"]) / 100.0

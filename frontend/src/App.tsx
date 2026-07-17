@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Camera, MapPin, Database, Route as RouteIcon, UploadCloud, StopCircle, PlayCircle, ScanSearch, Check, X, Film, Trash2, LogOut, Gauge, Compass, BatteryMedium, Wifi, WifiOff, ImageIcon } from 'lucide-react';
+import { Camera, MapPin, Database, Route as RouteIcon, UploadCloud, StopCircle, PlayCircle, ScanSearch, Check, X, Film, Trash2, LogOut, Gauge, Compass, BatteryMedium, Wifi, WifiOff, ImageIcon, Store } from 'lucide-react';
 import { api, getToken, setToken } from './services/api';
 import { queueSegment, queueGpsPoint, queueImage, pendingCounts, startAutoFlush } from './services/offlineQueue';
 import { AuthImg, AuthVideo } from './AuthMedia';
@@ -54,6 +54,21 @@ const assetTypeLabels: Record<string,string> = {
   electricity_pole:'עמוד חשמל', sewage_manhole:'שוחת ביוב', water_valve:'ברז מים'
 };
 const statusLabels: Record<string,string> = { draft:'ממתין לאישור', approved:'אושר', rejected:'נדחה' };
+
+const categoryLabels: Record<string,string> = {
+  pharmacy:'בית מרקחת', clinic:'מרפאה', dentist:'רופא שיניים', supermarket:'סופרמרקט',
+  grocery:'מכולת', restaurant:'מסעדה', cafe:'בית קפה', bakery:'מאפייה', barber:'מספרה',
+  beauty:'טיפוח ויופי', bank:'בנק', garage:'מוסך', clothing:'ביגוד', hardware:'חומרי בניין',
+  mosque:'מסגד', school:'מוסד חינוך', municipal:'מבנה ציבורי', sports:'ספורט', hotel:'מלון',
+  unknown:'לא מסווג'
+};
+
+type Business = {
+  id:number; route_id?:number; name:string; category:string; ocr_text?:string;
+  languages?:string; confidence:number; latitude?:number; longitude?:number;
+  status:string; snapshot_path?:string;
+};
+const CATEGORY_OPTIONS = Object.keys(categoryLabels);
 const kindLabels: Record<string,string> = { interval:'נסיעה איטית', stop_burst:'עצירה', manual:'ידני' };
 const layerLabels: Record<string,string> = {
   telecom:'תקשורת וטלפוניה', electricity:'חשמל', water:'מים', sewage:'ביוב',
@@ -97,10 +112,11 @@ export default function App() {
   const [user, setUser] = useState<UserInfo | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
 
-  const [tab, setTab] = useState<'record'|'videos'|'detections'|'assets'|'dashboard'>('record');
+  const [tab, setTab] = useState<'record'|'videos'|'detections'|'businesses'|'assets'|'dashboard'>('record');
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
   const [assets, setAssets] = useState<Asset[]>([]);
   const [detections, setDetections] = useState<Detection[]>([]);
+  const [businesses, setBusinesses] = useState<Business[]>([]);
   const [routes, setRoutes] = useState<RouteInfo[]>([]);
   const [selectedRoute, setSelectedRoute] = useState<number | null>(null);
   const [segments, setSegments] = useState<Segment[]>([]);
@@ -168,6 +184,19 @@ export default function App() {
     setDashboard(await api<Dashboard>('/dashboard'));
     setAssets(await api<Asset[]>('/assets'));
     setDetections(await api<Detection[]>('/detections'));
+    setBusinesses(await api<Business[]>('/businesses'));
+  }
+
+  async function decideBusiness(id: number, action: 'approve'|'reject') {
+    await api(`/businesses/${id}/${action}`, {method:'POST'});
+    refresh();
+  }
+
+  async function saveBusinessEdit(id: number, patch: {name?:string; category?:string}) {
+    await api(`/businesses/${id}`, {
+      method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify(patch),
+    });
+    refresh();
   }
 
   async function refreshPending() {
@@ -505,6 +534,10 @@ export default function App() {
         <ScanSearch size={18}/> זיהויים
         {detections.filter(d=>d.status==='draft').length > 0 && ` (${detections.filter(d=>d.status==='draft').length})`}
       </button>
+      <button onClick={()=>setTab('businesses')} className={tab==='businesses'?'active':''}>
+        <Store size={18}/> עסקים
+        {businesses.filter(b=>b.status==='draft').length > 0 && ` (${businesses.filter(b=>b.status==='draft').length})`}
+      </button>
       <button onClick={()=>setTab('assets')} className={tab==='assets'?'active':''}><Database size={18}/> נכסים</button>
       <button onClick={()=>setTab('dashboard')} className={tab==='dashboard'?'active':''}><MapPin size={18}/> לוח בקרה</button>
     </nav>
@@ -613,7 +646,7 @@ export default function App() {
           <p>זיהויים אוטומטיים מווידאו ותמונות. אישור הופך זיהוי לנכס במאגר; דחייה מסירה אותו.</p>
         </div></div>
         {!detections.length && <div className="empty-note">
-          אין עדיין זיהויים. ה־worker מעבד כל וידאו ותמונה שעולים ומזהה נכסים גלויים (בשלב הפיילוט: ברזי כיבוי, תמרורים, רמזורים, ספסלים ומדחנים).
+          אין עדיין זיהויי תשתית. זיהוי עמודי חשמל/תקשורת וארונות דורש מודל YOLO ייעודי מאומן — הפיילוט אוסף כעת את התמונות לאימונו. זיהוי עסקים מופיע בטאב "עסקים".
         </div>}
         <div className="detection-grid">
           {detections.map(d => <div className="detection-card" key={d.id}>
@@ -633,6 +666,46 @@ export default function App() {
               {d.status==='draft' && canValidate && <div className="detection-actions">
                 <button className="approve" onClick={()=>decideDetection(d.id,'approve')}><Check size={16}/> אישור</button>
                 <button className="reject" onClick={()=>decideDetection(d.id,'reject')}><X size={16}/> דחייה</button>
+              </div>}
+            </div>
+          </div>)}
+        </div>
+      </section>}
+
+      {tab==='businesses' && <section>
+        <div className="section-head"><div>
+          <h2>עסקים ומוסדות</h2>
+          <p>זיהוי שלטי עסקים ב־OCR (ערבית/עברית/אנגלית). ניתן לתקן שם וקטגוריה לפני אישור.</p>
+        </div></div>
+        {!businesses.length && <div className="empty-note">
+          אין עדיין עסקים. ה־OCR קורא שלטים מתמונות ברזולוציה גבוהה שנלכדות בעצירות — צלם סיבוב ברחוב עם חזיתות חנויות.
+        </div>}
+        <div className="detection-grid">
+          {businesses.map(b => <div className="detection-card" key={b.id}>
+            {b.snapshot_path && <AuthImg path={`/businesses/${b.id}/snapshot`} alt={b.name} loading="lazy"/>}
+            <div className="detection-body">
+              {b.status==='draft' && canValidate
+                ? <input className="biz-name-edit" defaultValue={b.name}
+                    onBlur={e => e.target.value !== b.name && saveBusinessEdit(b.id, {name: e.target.value})}/>
+                : <strong>{b.name}</strong>}
+              <div className="detection-title">
+                {b.status==='draft' && canValidate
+                  ? <select value={b.category} onChange={e => saveBusinessEdit(b.id, {category: e.target.value})}>
+                      {CATEGORY_OPTIONS.map(c => <option key={c} value={c}>{categoryLabels[c]}</option>)}
+                    </select>
+                  : <span className="chip">{categoryLabels[b.category] || b.category}</span>}
+                <span className={`chip ${b.status}`}>{statusLabels[b.status] || b.status}</span>
+              </div>
+              <div className="detection-meta">
+                <span>ביטחון: {Math.round(b.confidence*100)}%</span>
+                {b.languages && <span>{b.languages}</span>}
+                {b.latitude != null && b.longitude != null
+                  ? <span>{b.latitude.toFixed(5)}, {b.longitude.toFixed(5)}</span>
+                  : <span>ללא מיקום</span>}
+              </div>
+              {b.status==='draft' && canValidate && <div className="detection-actions">
+                <button className="approve" onClick={()=>decideBusiness(b.id,'approve')}><Check size={16}/> אישור</button>
+                <button className="reject" onClick={()=>decideBusiness(b.id,'reject')}><X size={16}/> דחייה</button>
               </div>}
             </div>
           </div>)}

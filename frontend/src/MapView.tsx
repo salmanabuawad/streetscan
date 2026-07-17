@@ -14,6 +14,7 @@ const LAYER_COLORS: Record<string, string> = {
 type MapData = {
   assets: { id:number; name:string; asset_type:string; layer:string; status:string; lat:number; lng:number; underground:boolean }[];
   detections: { id:number; asset_type:string; layer:string; confidence:number; status:string; lat:number; lng:number }[];
+  businesses: { id:number; name:string; category:string; confidence:number; status:string; lat:number; lng:number }[];
   tracks: { route_id:number; vehicle_name:string; points:[number, number][] }[];
 };
 
@@ -23,7 +24,7 @@ export default function MapView({ layerLabels, assetTypeLabels }: {
 }) {
   const mapEl = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<L.Map | null>(null);
-  const [counts, setCounts] = useState<{assets:number; detections:number; tracks:number} | null>(null);
+  const [counts, setCounts] = useState<{assets:number; detections:number; businesses:number; tracks:number} | null>(null);
 
   useEffect(() => {
     if (!mapEl.current || mapRef.current) return;
@@ -67,8 +68,18 @@ export default function MapView({ layerLabels, assetTypeLabels }: {
         bounds.push([d.lat, d.lng]);
       }
 
+      for (const b of (data.businesses || [])) {
+        L.marker([b.lat, b.lng], {
+          icon: L.divIcon({ className: 'biz-pin', html: '🏪', iconSize: [22, 22] }),
+        }).bindPopup(
+          `<b>${b.name}</b><br/>${b.category} · ${Math.round(b.confidence * 100)}%`
+        ).addTo(map);
+        bounds.push([b.lat, b.lng]);
+      }
+
       if (bounds.length) map.fitBounds(L.latLngBounds(bounds).pad(0.2), { maxZoom: 17 });
-      setCounts({ assets: data.assets.length, detections: data.detections.length, tracks: data.tracks.length });
+      setCounts({ assets: data.assets.length, detections: data.detections.length,
+                  businesses: (data.businesses || []).length, tracks: data.tracks.length });
     }).catch(console.error);
 
     return () => { map.remove(); mapRef.current = null; };
@@ -79,12 +90,13 @@ export default function MapView({ layerLabels, assetTypeLabels }: {
       {Object.entries(LAYER_COLORS).map(([k, c]) =>
         <span key={k} className="legend-item"><i style={{background:c}}/> {layerLabels[k] || k}</span>)}
       <span className="legend-item"><i style={{background:'#f97316'}}/> זיהוי AI</span>
+      <span className="legend-item">🏪 עסק</span>
       <span className="legend-item"><i style={{background:'#2563eb', borderRadius:2, height:4}}/> מסלול</span>
     </div>
     <div ref={mapEl} className="map-container"/>
     {counts && <p className="map-counts">
-      {counts.assets} נכסים · {counts.detections} זיהויים ממופים · {counts.tracks} מסלולים עם GPS
-      {!counts.assets && !counts.detections && !counts.tracks && ' — המפה תתמלא ככל שיוקלטו מסלולים ויאושרו נכסים'}
+      {counts.assets} נכסים · {counts.detections} זיהויים · {counts.businesses} עסקים · {counts.tracks} מסלולים עם GPS
+      {!counts.assets && !counts.detections && !counts.businesses && !counts.tracks && ' — המפה תתמלא ככל שיוקלטו מסלולים ויאושרו נכסים'}
     </p>}
   </div>;
 }

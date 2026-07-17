@@ -60,7 +60,7 @@ const categoryLabels: Record<string,string> = {
   pharmacy:'בית מרקחת', clinic:'מרפאה', dentist:'רופא שיניים', supermarket:'סופרמרקט',
   grocery:'מכולת', agriculture:'חקלאות', greengrocer:'ירקן', restaurant:'מסעדה', cafe:'בית קפה', bakery:'מאפייה', barber:'מספרה',
   beauty:'טיפוח ויופי', bank:'בנק', garage:'מוסך', clothing:'ביגוד', hardware:'חומרי בניין',
-  mosque:'מסגד', school:'מוסד חינוך', municipal:'מבנה ציבורי', sports:'ספורט', hotel:'מלון',
+  mosque:'מסגד', holy_site:'אתר קדוש/מורשת', school:'מוסד חינוך', municipal:'מבנה ציבורי', sports:'ספורט', hotel:'מלון',
   unknown:'לא מסווג'
 };
 

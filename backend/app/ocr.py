@@ -18,8 +18,13 @@ CATEGORY_KEYWORDS: dict[str, list[str]] = {
     "dentist":     ["اسنان", "أسنان", "שיניים", "dental", "dentist"],
     "supermarket": ["سوبر ماركت", "سوبرماركت", "بقالة", "סופרמרקט", "סופר", "מרכול", "supermarket", "market"],
     "grocery":     ["بقالة", "مواد غذائية", "מכולת", "grocery"],
+    # Religious / heritage sites come BEFORE greengrocer: "الخضر" (al-Khadr,
+    # a Druze holy figure) collides with "الخضار" (vegetables). Brown road
+    # signs to shrines are POIs, not shops.
+    "holy_site":   ["مقام", "خلوة", "ضريح", "مزار", "النبي", "نبي الخضر", "الخضر الغربي", "الخضر",
+                    "maqam", "shrine", "מקום קדוש", "מקאם", "קבר", "ח'לווה"],
     "agriculture": ["الزراعة", "زراعة", "الفلاحة", "חקלאות", "משתלה", "مشتل", "agriculture", "farm", "nursery", "agri"],
-    "greengrocer": ["الخضار", "الخضر", "خضار", "ירקות", "פירות וירקות", "vegetables", "produce", "greengrocer"],
+    "greengrocer": ["الخضار", "خضار", "ירקות", "פירות וירקות", "vegetables", "produce", "greengrocer"],
     "restaurant":  ["مطعم", "مطاعم", "מסעדה", "restaurant", "grill", "شاورما"],
     "cafe":        ["مقهى", "كافيه", "קפה", "cafe", "coffee", "قهوة"],
     "bakery":      ["مخبز", "فرن", "מאפייה", "bakery", "معجنات"],

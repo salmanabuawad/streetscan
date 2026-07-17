@@ -88,6 +88,8 @@ const TRAINING_TYPES: { layer:string; label:string; types:[string,string][] }[] 
   { layer:'road', label:'כבישים', types:[ ['sign','תמרור'], ['speed_bump','פס האטה'], ['guard_rail','מעקה בטיחות'] ]},
   { layer:'public_space', label:'מרחב ציבורי', types:[
     ['garbage_container','מכל אשפה'], ['bench','ספסל'], ['bus_station','תחנת אוטובוס'] ]},
+  { layer:'safety', label:'מיגון וביטחון', types:[
+    ['migunit','מיגונית'], ['public_shelter','מקלט ציבורי'] ]},
 ];
 const TRAINING_TYPE_LABEL: Record<string,string> = Object.fromEntries(
   TRAINING_TYPES.flatMap(g => g.types)
@@ -98,7 +100,8 @@ function trainingLayerOf(type: string): string {
 const kindLabels: Record<string,string> = { interval:'נסיעה איטית', stop_burst:'עצירה', manual:'ידני' };
 const layerLabels: Record<string,string> = {
   telecom:'תקשורת וטלפוניה', electricity:'חשמל', water:'מים', sewage:'ביוב',
-  drainage:'ניקוז', tunnel:'תעלות ומעברים', road:'כבישים', public_space:'מרחב ציבורי'
+  drainage:'ניקוז', tunnel:'תעלות ומעברים', road:'כבישים', public_space:'מרחב ציבורי',
+  safety:'מיגון וביטחון'
 };
 
 function fmtTime(iso: string) {

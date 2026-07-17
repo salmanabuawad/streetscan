@@ -5,6 +5,7 @@ import { queueSegment, queueGpsPoint, queueImage, pendingCounts, startAutoFlush 
 import { AuthImg, AuthVideo } from './AuthMedia';
 import Login from './Login';
 import MapView from './MapView';
+import CommandCenter from './CommandCenter';
 import BBoxPicker, { type Box } from './BBoxPicker';
 
 const SEGMENT_MS = 15000;
@@ -986,14 +987,8 @@ export default function App() {
       </section>}
 
       {tab==='dashboard' && <section>
-        <h2>לוח בקרה</h2>
-        <div className="metrics">
-          <div className="metric"><span>נכסים</span><strong>{dashboard?.assets ?? 0}</strong></div>
-          <div className="metric"><span>מסלולים</span><strong>{dashboard?.routes ?? 0}</strong></div>
-          <div className="metric"><span>זיהויים</span><strong>{dashboard?.detections ?? 0}</strong></div>
-          <div className="metric"><span>קריאות</span><strong>{dashboard?.tickets ?? 0}</strong></div>
-        </div>
-        <MapView layerLabels={layerLabels} assetTypeLabels={assetTypeLabels}/>
+        <CommandCenter layerLabels={layerLabels} assetTypeLabels={assetTypeLabels}
+          categoryLabels={categoryLabels} statusLabels={statusLabels}/>
       </section>}
     </main>
   </div>

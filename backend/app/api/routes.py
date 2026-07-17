@@ -584,6 +584,76 @@ def map_data(db: Session = Depends(get_db)):
         "tracks": tracks,
     }
 
+def _haversine_km(a: tuple[float, float], b: tuple[float, float]) -> float:
+    from math import radians, sin, cos, asin, sqrt
+    lat1, lon1, lat2, lon2 = map(radians, (a[0], a[1], b[0], b[1]))
+    h = sin((lat2 - lat1) / 2) ** 2 + cos(lat1) * cos(lat2) * sin((lon2 - lon1) / 2) ** 2
+    return 2 * 6371 * asin(sqrt(h))
+
+
+@router.get("/overview", dependencies=[DRIVER])
+def overview(db: Session = Depends(get_db)):
+    """Rich aggregate for the command-center dashboard."""
+    routes = db.scalars(select(Route).order_by(Route.id.desc())).all()
+    active = sum(1 for r in routes if r.active)
+
+    # total surveyed distance across all routes (haversine over ordered points)
+    distance_km = 0.0
+    for r in routes:
+        pts = db.scalars(
+            select(GPSPoint.latitude, GPSPoint.longitude)
+            .where(GPSPoint.route_id == r.id).order_by(GPSPoint.captured_at)
+        ).all()
+        for p, q in zip(pts, pts[1:]):
+            if None not in (p[0], p[1], q[0], q[1]):
+                d = _haversine_km((p[0], p[1]), (q[0], q[1]))
+                if d < 0.5:  # skip GPS jumps
+                    distance_km += d
+
+    def count(model):
+        return db.scalar(select(func.count()).select_from(model)) or 0
+
+    det_by_status = dict(db.execute(
+        select(Detection.status, func.count()).group_by(Detection.status)
+    ).all())
+    biz_rows = db.execute(
+        select(Business.category, func.count()).group_by(Business.category)
+    ).all()
+    train_rows = db.execute(
+        select(TrainingSample.asset_type, func.count()).group_by(TrainingSample.asset_type)
+    ).all()
+
+    recent_biz = db.scalars(
+        select(Business).order_by(Business.created_at.desc()).limit(6)
+    ).all()
+
+    return {
+        "routes": {"total": len(routes), "active": active},
+        "distance_km": round(distance_km, 2),
+        "gps_points": count(GPSPoint),
+        "images": count(CapturedImage),
+        "videos": count(VideoSegment),
+        "detections": {
+            "total": count(Detection),
+            "pending": det_by_status.get(DetectionStatus.DRAFT, 0),
+            "approved": det_by_status.get(DetectionStatus.APPROVED, 0),
+        },
+        "businesses": {
+            "total": count(Business),
+            "by_category": {c: n for c, n in biz_rows},
+        },
+        "training": {
+            "total": count(TrainingSample),
+            "by_type": {t: n for t, n in train_rows},
+        },
+        "recent_businesses": [
+            {"id": b.id, "name": b.name, "category": b.category,
+             "confidence": b.confidence, "status": b.status.value}
+            for b in recent_biz
+        ],
+    }
+
+
 @router.get("/dashboard", dependencies=[DRIVER])
 def dashboard(db: Session = Depends(get_db)):
     asset_count = db.scalar(select(func.count()).select_from(Asset)) or 0

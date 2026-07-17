@@ -136,6 +136,16 @@ HINT_ROTATE = {
 }
 
 
+def clip_duration_s(cap, fps: float) -> float:
+    """Segment length in seconds, guarding against webm files whose frame
+    count is unreliable/garbage (MediaRecorder writes no duration header) —
+    a huge value would overflow timedelta. Falls back to 0 (frames ~= end
+    time) when the count is implausible for a ~15s clip."""
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    duration = total / fps if total > 0 else 0.0
+    return duration if 0 <= duration <= 600 else 0.0
+
+
 def process_segment(db, segment: VideoSegment, detector) -> int:
     cap, rotate_code = open_capture(segment.filename)
     if not cap.isOpened():
@@ -146,8 +156,7 @@ def process_segment(db, segment: VideoSegment, detector) -> int:
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     if fps <= 0:
         fps = 30.0
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-    duration = total_frames / fps if total_frames > 0 else 0.0
+    duration = clip_duration_s(cap, fps)
     # captured_at is stamped when the segment finishes recording
     start_time = to_naive_utc(segment.captured_at) - timedelta(seconds=duration)
 
@@ -310,8 +319,7 @@ def process_segment_ocr(db, segment: VideoSegment) -> int:
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     if fps <= 0:
         fps = 30.0
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-    duration = total_frames / fps if total_frames else 0.0
+    duration = clip_duration_s(cap, fps)
     start_time = to_naive_utc(segment.captured_at) - timedelta(seconds=duration)
     gps_points = db.scalars(select(GPSPoint).where(GPSPoint.route_id == segment.route_id)).all()
 

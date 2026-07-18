@@ -77,6 +77,7 @@ sudo -u postgres psql $DB_NAME -c "ALTER TABLE IF EXISTS video_segments ADD COLU
 sudo -u postgres psql $DB_NAME -tAc "SELECT 1 FROM information_schema.columns WHERE table_name='captured_images' AND column_name='engine_processed'" | grep -q 1 || \
   sudo -u postgres psql $DB_NAME -c "ALTER TABLE captured_images ADD COLUMN engine_processed BOOLEAN NOT NULL DEFAULT FALSE; UPDATE captured_images SET engine_processed=TRUE"
 sudo -u postgres psql $DB_NAME -c "ALTER TABLE IF EXISTS captured_images ADD COLUMN IF NOT EXISTS openvocab_processed BOOLEAN NOT NULL DEFAULT TRUE"
+sudo -u postgres psql $DB_NAME -c "ALTER TABLE IF EXISTS candidate_assets ADD COLUMN IF NOT EXISTS asset_name VARCHAR(200)"
 for col in bbox_cx bbox_cy bbox_w bbox_h; do
   sudo -u postgres psql $DB_NAME -c "ALTER TABLE IF EXISTS training_samples ADD COLUMN IF NOT EXISTS $col DOUBLE PRECISION" 2>/dev/null || true
 done

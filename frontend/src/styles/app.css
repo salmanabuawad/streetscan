@@ -78,6 +78,8 @@ th{color:#94a3b8}
 .modal-actions{display:flex;gap:10px;margin-top:14px}
 .modal-actions button{flex:1;display:inline-flex;justify-content:center;gap:6px;align-items:center;padding:11px 0;border:0;border-radius:10px;color:#fff;cursor:pointer}
 .modal-actions button:disabled{opacity:.5}
+.cand-edit{display:flex;flex-direction:column;gap:7px;margin:8px 0}
+.cand-edit input{background:#0b1220;border:1px solid #334155;color:#e5e7eb;border-radius:8px;padding:8px 10px;font-size:13.5px;width:100%}
 .edit-fields{display:flex;gap:10px;margin-top:12px;flex-wrap:wrap}
 .edit-fields select,.edit-fields input{flex:1;min-width:140px;background:#0b1220;border:1px solid #334155;color:#e5e7eb;border-radius:10px;padding:10px 12px;font-size:14px}
 .train-mode-hint{background:#172033;border:1px solid #243244;border-radius:14px;padding:12px 14px;margin-bottom:14px;color:#cbd5e1;font-size:14px;line-height:1.6}

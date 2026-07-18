@@ -681,7 +681,8 @@ def list_candidates(category: str | None = None, band: str | None = None,
 def _candidate_out(c: CandidateAsset) -> dict:
     return {
         "id": c.id, "proposed_asset_id": c.proposed_asset_id, "image_id": c.image_id,
-        "route_id": c.route_id, "category": c.proposed_category, "layer": c.infrastructure_layer,
+        "route_id": c.route_id, "category": c.proposed_category, "asset_name": c.asset_name,
+        "layer": c.infrastructure_layer,
         "confidence": c.confidence, "band": c.confidence_band, "bbox": c.bbox,
         "ocr_text": c.ocr_text, "condition": c.condition, "quality_score": c.quality_score,
         "latitude": c.latitude, "longitude": c.longitude, "detector": c.detector_name,
@@ -699,12 +700,23 @@ def _feedback(db, c, ftype, user, **kw):
     db.add(TrainingFeedback(candidate_id=c.id, feedback_type=ftype, user_id=user.id, **kw))
 
 @router.post("/assets/candidates/{cand_id}/approve", dependencies=[VALIDATOR])
-def approve_candidate(cand_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def approve_candidate(cand_id: int, category: str | None = Form(None),
+                      name: str | None = Form(None), db: Session = Depends(get_db),
+                      user: User = Depends(get_current_user)):
+    """Approve, optionally overriding the category and/or setting a free-text
+    name. A changed category is recorded as a correction for model training."""
     c = db.get(CandidateAsset, cand_id)
     if not c:
         raise HTTPException(404, "Candidate not found")
+    if category and category.strip() and category.strip() != c.proposed_category:
+        corrected = category.strip()
+        c.proposed_category = corrected
+        _feedback(db, c, "correct_category", user, corrected_category=corrected)
+    else:
+        _feedback(db, c, "approve", user)
+    if name is not None and name.strip():
+        c.asset_name = name.strip()
     c.status = CandidateStatus.APPROVED
-    _feedback(db, c, "approve", user)
     db.commit()
     return _candidate_out(c)
 

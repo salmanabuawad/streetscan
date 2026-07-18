@@ -184,6 +184,7 @@ export default function App() {
   const [detCands, setDetCands] = useState<any[]>([]);
   const [analysisJob, setAnalysisJob] = useState<any>(null);
   const [allCats, setAllCats] = useState<string[]>([]);
+  const [candEdit, setCandEdit] = useState<Record<number, {type?:string; name?:string}>>({});
   const [candCat, setCandCat] = useState<string>('');
   const [candBand, setCandBand] = useState<string>('');
   const [routes, setRoutes] = useState<RouteInfo[]>([]);
@@ -282,6 +283,14 @@ export default function App() {
         if (p.status === 'done') clearInterval(poll);
       } catch { clearInterval(poll); }
     }, 6000);
+  }
+
+  async function approveCand(id: number, category: string, name: string) {
+    const fd = new FormData();
+    if (category.trim()) fd.append('category', category.trim());
+    if (name.trim()) fd.append('name', name.trim());
+    await api(`/assets/candidates/${id}/approve`, {method:'POST', body: fd});
+    setDetCands(cs => cs.filter(c => c.id !== id));
   }
 
   async function decideCand(id: number, action: 'approve'|'reject') {
@@ -960,25 +969,33 @@ export default function App() {
           </div>}
 
           <div className="detection-grid">
+            <datalist id="cand-types">
+              {allCats.map(k => <option key={k} value={k}>{TRAINING_TYPE_LABEL[k]||categoryLabels[k]||k}</option>)}
+            </datalist>
             {detCands.map(c => <div className="detection-card" key={c.id}>
               <AuthImg path={`/assets/candidates/${c.id}/image`} alt={c.category} loading="lazy"/>
               <div className="detection-body">
                 <div className="detection-title">
-                  {canValidate
-                    ? <select value={c.category} onChange={e=>correctCand(c.id, e.target.value)}>
-                        {(allCats.length ? allCats : [c.category]).map(k=>
-                          <option key={k} value={k}>{TRAINING_TYPE_LABEL[k]||categoryLabels[k]||k}</option>)}
-                      </select>
-                    : <strong>{TRAINING_TYPE_LABEL[c.category]||c.category}</strong>}
+                  <strong>{TRAINING_TYPE_LABEL[c.category]||c.category}</strong>
                   <span className={`chip ${c.band==='high'?'approved':c.band==='medium'?'draft':''}`}>{Math.round(c.confidence*100)}%</span>
                 </div>
+                {canValidate && <div className="cand-edit">
+                  <input list="cand-types" placeholder="סוג נכס (טקסט חופשי)"
+                    value={candEdit[c.id]?.type ?? c.category}
+                    onChange={e=>setCandEdit(s=>({...s, [c.id]:{...s[c.id], type:e.target.value}}))}/>
+                  <input placeholder="שם/תיאור (לא חובה)"
+                    value={candEdit[c.id]?.name ?? c.asset_name ?? ''}
+                    onChange={e=>setCandEdit(s=>({...s, [c.id]:{...s[c.id], name:e.target.value}}))}/>
+                </div>}
                 <div className="detection-meta">
-                  <span className="det-badge">{c.detector==='yolo'?'YOLO':'ניסיוני open-vocab'}</span>
+                  <span className="det-badge">{c.detector==='yolo'||c.detector?.startsWith('buqata')?'מודל עירוני':'ניסיוני open-vocab'}</span>
                   <span>{layerLabels[c.layer]||c.layer}</span>
                   {c.latitude!=null ? <span>📍</span> : <span>ללא מיקום</span>}
                 </div>
                 {canValidate && <div className="detection-actions">
-                  <button className="approve" onClick={()=>decideCand(c.id,'approve')}><Check size={16}/> אשר → נכס</button>
+                  <button className="approve" onClick={()=>approveCand(c.id,
+                      candEdit[c.id]?.type ?? c.category, candEdit[c.id]?.name ?? '')}>
+                    <Check size={16}/> אשר → נכס</button>
                   <button className="reject" onClick={()=>decideCand(c.id,'reject')}><X size={16}/> דחה</button>
                 </div>}
               </div>

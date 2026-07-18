@@ -157,6 +157,7 @@ class CandidateAsset(Base):
     image_sequence: Mapped[int | None] = mapped_column(Integer, nullable=True)
     capture_type: Mapped[str | None] = mapped_column(String(30), nullable=True)
     proposed_category: Mapped[str] = mapped_column(String(80))
+    asset_name: Mapped[str | None] = mapped_column(String(200), nullable=True)  # free-text label
     infrastructure_layer: Mapped[str] = mapped_column(String(40))
     confidence: Mapped[float] = mapped_column(Float)
     bbox: Mapped[str] = mapped_column(String(80))                 # "x1,y1,x2,y2"

@@ -5,10 +5,11 @@ import { api } from './services/api';
 
 // Buqata (בוקעאתא), northern Golan Heights
 const BUQATA_CENTER: [number, number] = [33.201, 35.779];
-// zoom 14 shows the whole village + immediate surroundings; don't allow
-// zooming further out than that, and keep panning near Buqata.
-const MIN_ZOOM = 14;
-const MAX_BOUNDS: [[number, number], [number, number]] = [[33.16, 35.72], [33.24, 35.84]];
+// Lock the view on Buqata: zoom 15 keeps the village filling the frame, and a
+// tight hard boundary (viscosity 1.0 below) stops panning out to Mas'ade /
+// Odem forest. Roughly the village plus a short margin.
+const MIN_ZOOM = 15;
+const MAX_BOUNDS: [[number, number], [number, number]] = [[33.187, 35.762], [33.216, 35.797]];
 
 const LAYER_COLORS: Record<string, string> = {
   telecom: '#a855f7', electricity: '#eab308', water: '#3b82f6', sewage: '#b45309',
@@ -36,8 +37,8 @@ export default function MapView({ layerLabels, assetTypeLabels }: {
       zoomControl: true,
       minZoom: MIN_ZOOM,
       maxBounds: L.latLngBounds(MAX_BOUNDS),
-      maxBoundsViscosity: 0.8,
-    }).setView(BUQATA_CENTER, 15);
+      maxBoundsViscosity: 1.0,   // hard wall — panning cannot leave Buqata
+    }).setView(BUQATA_CENTER, MIN_ZOOM);
     mapRef.current = map;
     L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
       minZoom: MIN_ZOOM,
@@ -90,7 +91,16 @@ export default function MapView({ layerLabels, assetTypeLabels }: {
         bounds.push([b.lat, b.lng]);
       }
 
-      if (bounds.length) map.fitBounds(L.latLngBounds(bounds).pad(0.2), { maxZoom: 17 });
+      // fit to the data, but never outside the Buqata boundary (a stray
+      // coordinate must not drag the view off the village)
+      if (bounds.length) {
+        const limit = L.latLngBounds(MAX_BOUNDS);
+        const inside = bounds.filter(p => limit.contains(L.latLng(p[0], p[1])));
+        if (inside.length) {
+          map.fitBounds(L.latLngBounds(inside).pad(0.2), { maxZoom: 17 });
+          if (!limit.contains(map.getCenter())) map.setView(BUQATA_CENTER, MIN_ZOOM);
+        }
+      }
       setCounts({ assets: data.assets.length, detections: data.detections.length,
                   businesses: (data.businesses || []).length, tracks: data.tracks.length });
     }).catch(console.error);

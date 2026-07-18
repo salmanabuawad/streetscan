@@ -141,14 +141,16 @@ export default function App() {
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
   const [assets, setAssets] = useState<Asset[]>([]);
   const [businesses, setBusinesses] = useState<Business[]>([]);
-  const [training, setTraining] = useState<{id:number;asset_name:string;asset_type:string;layer:string;latitude?:number;longitude?:number;bbox_cx?:number|null}[]>([]);
+  const [training, setTraining] = useState<{id:number;asset_name:string;asset_type:string;layer:string;latitude?:number;longitude?:number;bbox_cx?:number|null;bbox_cy?:number|null;bbox_w?:number|null;bbox_h?:number|null}[]>([]);
   const [trainType, setTrainType] = useState('electricity_pole');
   const [trainName, setTrainName] = useState('');
   const [trainFile, setTrainFile] = useState<File | null>(null);
   const [trainFileUrl, setTrainFileUrl] = useState<string | null>(null);
   const [trainBox, setTrainBox] = useState<Box | null>(null);
   const [trainBusy, setTrainBusy] = useState(false);
-  const [editSample, setEditSample] = useState<{id:number;asset_type:string}|null>(null);
+  const [editSample, setEditSample] = useState<any|null>(null);
+  const [editType, setEditType] = useState('');
+  const [editName, setEditName] = useState('');
   const [editBox, setEditBox] = useState<Box | null>(null);
   const [editImgUrl, setEditImgUrl] = useState<string | null>(null);
   const [captures, setCaptures] = useState<{id:number;latitude?:number;longitude?:number}[]>([]);
@@ -455,7 +457,11 @@ export default function App() {
     if (!editSample || !editBox) return;
     await api(`/training-samples/${editSample.id}`, {
       method:'PATCH', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ bbox_cx:editBox.cx, bbox_cy:editBox.cy, bbox_w:editBox.w, bbox_h:editBox.h }),
+      body: JSON.stringify({
+        bbox_cx:editBox.cx, bbox_cy:editBox.cy, bbox_w:editBox.w, bbox_h:editBox.h,
+        asset_type: editType || undefined,
+        asset_name: editName.trim() || undefined,
+      }),
     });
     setEditSample(null); setEditBox(null);
     loadTraining();
@@ -1187,8 +1193,11 @@ export default function App() {
                       : <span className="chip draft">ללא תיבה</span>}
                     {t.latitude != null ? <span>📍</span> : <span>ללא מיקום</span>}
                   </div>
-                  <button className="link-btn" onClick={()=>{setEditBox(null); setEditSample({id:t.id, asset_type:t.asset_type});}}>
-                    {t.bbox_cx != null ? 'ערוך תיבה' : 'סמן תיבה'}
+                  <button className="link-btn" onClick={()=>{
+                      setEditBox(t.bbox_cx != null ? {cx:t.bbox_cx, cy:t.bbox_cy!, w:t.bbox_w!, h:t.bbox_h!} : null);
+                      setEditType(t.asset_type); setEditName(t.asset_name || '');
+                      setEditSample({id:t.id, asset_type:t.asset_type});}}>
+                    {t.bbox_cx != null ? 'ערוך' : 'סמן תיבה'}
                   </button>
                 </div>
               </div>)}
@@ -1224,13 +1233,22 @@ export default function App() {
 
         {editSample && <div className="modal-backdrop" onClick={()=>setEditSample(null)}>
           <div className="modal" onClick={e=>e.stopPropagation()}>
-            <h3>סימון תיבה — {TRAINING_TYPE_LABEL[editSample.asset_type] || editSample.asset_type}</h3>
+            <h3>עריכת דוגמת אימון — {TRAINING_TYPE_LABEL[editType] || editType}</h3>
             {editImgUrl
               ? <BBoxPicker src={editImgUrl} onChange={setEditBox}/>
               : <div className="media-loading">טוען תמונה...</div>}
+            <div className="edit-fields">
+              <select value={editType} onChange={e=>setEditType(e.target.value)}>
+                {TRAINING_TYPES.map(g => <optgroup key={g.layer} label={g.label}>
+                  {g.types.map(([v,l]) => <option key={v} value={v}>{l}</option>)}
+                </optgroup>)}
+                {!TRAINING_TYPE_LABEL[editType] && <option value={editType}>{editType}</option>}
+              </select>
+              <input placeholder="שם/תיאור (לא חובה)" value={editName} onChange={e=>setEditName(e.target.value)}/>
+            </div>
             <div className="modal-actions">
               <button className="reject" onClick={()=>setEditSample(null)}><X size={16}/> ביטול</button>
-              <button className="approve" disabled={!editBox} onClick={saveSampleBox}><Check size={16}/> שמור תיבה</button>
+              <button className="approve" disabled={!editBox} onClick={saveSampleBox}><Check size={16}/> שמור</button>
             </div>
           </div>
         </div>}

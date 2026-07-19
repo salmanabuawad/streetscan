@@ -57,11 +57,14 @@ class DefaultAssetAnalysisEngine(AssetAnalysisEngine):
         self.crops_dir = Path(crops_dir)
         self.annotated_dir = Path(annotated_dir)
 
-    def analyze_image(self, image_path: str, context: CaptureContext) -> AssetAnalysisResult:
+    def analyze_image(self, image_path: str, context: CaptureContext,
+                      frame=None) -> AssetAnalysisResult:
+        """Analyze a still. Callers holding a decoded frame (e.g. video sampling)
+        pass it as `frame` and image_path is ignored."""
         t0 = time.time()
         result = AssetAnalysisResult(context=context, model_name=self.detector.name,
                                      model_version=self.detector.version)
-        img = cv2.imread(image_path)
+        img = frame if frame is not None else cv2.imread(image_path)
         if img is None:
             result.warnings.append("unreadable")
             return result

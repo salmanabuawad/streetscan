@@ -8,6 +8,7 @@ The active detection model is settings.model_path (a registered municipal model
 when trained; falls back to pretrained weights otherwise).
 """
 import logging
+import math
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -209,6 +210,22 @@ def run_once() -> int:
             image.engine_processed = True
             db.commit()
 
+        # Engine pass over video frames. The clips are the richest source of
+        # assets AND they carry a GPS track, so unlike the imported stills these
+        # detections land on the map. One segment per cycle keeps memory flat.
+        for segment in db.scalars(
+            select(VideoSegment).where(VideoSegment.processed.is_(False))
+            .order_by(VideoSegment.id).limit(1)
+        ).all():
+            try:
+                n = process_segment_engine(db, segment, _ENGINE[0])
+                log.info("segment %s -> %d candidate assets (video engine)", segment.id, n)
+                total += n
+            except Exception:
+                log.exception("engine analysis on segment %s failed; skipping", segment.id)
+            segment.processed = True
+            db.commit()
+
         # On-demand OWL-ViT infrastructure detection (button-triggered). Loads
         # the ~1GB model only when there's work; unloads when the queue drains
         # so the shared box gets its memory back.
@@ -364,6 +381,93 @@ def process_segment_ocr(db, segment: VideoSegment) -> int:
                             created += 1
         idx += 1
     cap.release()
+    return created
+
+
+# A driving camera sees the same pole in many consecutive frames. Two hits of
+# the same category within this distance are treated as one physical asset.
+SAME_ASSET_M = 12.0
+# Sample rate for the engine pass — at ~30 km/h this is a frame every ~12 m.
+ENGINE_FRAME_STRIDE_S = 1.5
+
+
+def meters_between(a: tuple[float, float], b: tuple[float, float]) -> float:
+    """Flat-earth approximation — fine at street scale."""
+    dlat = (a[0] - b[0]) * 111_320.0
+    dlng = (a[1] - b[1]) * 111_320.0 * math.cos(math.radians(a[0]))
+    return math.hypot(dlat, dlng)
+
+
+def process_segment_engine(db, segment: VideoSegment, engine) -> int:
+    """Run the asset engine over sampled frames of a clip and persist candidates
+    positioned from the route's GPS track. Frames with no GPS fix within
+    tolerance are skipped: an unmappable candidate is what we already have too
+    many of."""
+    cap, rotate_code = open_capture(segment.filename)
+    if not cap.isOpened():
+        return 0
+    if rotate_code is None and segment.orientation_hint:
+        rotate_code = HINT_ROTATE.get(segment.orientation_hint)
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    if fps <= 0:
+        fps = 30.0
+    duration = clip_duration_s(cap, fps)
+    start_time = to_naive_utc(segment.captured_at) - timedelta(seconds=duration)
+    gps_points = db.scalars(select(GPSPoint).where(GPSPoint.route_id == segment.route_id)).all()
+    if not gps_points:
+        return 0
+
+    stride = max(1, int(round(fps * ENGINE_FRAME_STRIDE_S)))
+    kept: list[tuple[str, float, float]] = []
+    created = 0
+    idx = 0
+    while True:
+        if not cap.grab():
+            break
+        if idx % stride == 0:
+            ok, frame = cap.retrieve()
+            if ok and frame is not None:
+                if rotate_code is not None:
+                    frame = cv2.rotate(frame, rotate_code)
+                if blur_variance(frame) >= settings.ocr_blur_min:
+                    frame_time = start_time + timedelta(seconds=idx / fps)
+                    point = nearest_gps(gps_points, frame_time)
+                    if point is not None:
+                        created += _engine_frame(db, segment, frame, point, kept, engine)
+        idx += 1
+    cap.release()
+    return created
+
+
+def _engine_frame(db, segment: VideoSegment, frame, point: GPSPoint,
+                  kept: list[tuple[str, float, float]], engine) -> int:
+    ctx = CaptureContext(
+        image_id=None, route_id=segment.route_id, capture_type="video",
+        latitude=point.latitude, longitude=point.longitude,
+        heading_deg=point.heading_deg, quality_score=None, source="video",
+    )
+    result = engine.analyze_image("", ctx, frame=frame)
+    created = 0
+    for a in result.assets:
+        here = (point.latitude, point.longitude)
+        if any(cat == a.proposed_category and meters_between(here, (lat, lng)) < SAME_ASSET_M
+               for cat, lat, lng in kept):
+            continue
+        kept.append((a.proposed_category, point.latitude, point.longitude))
+        db.add(CandidateAsset(
+            route_id=segment.route_id, capture_type="video",
+            proposed_category=a.proposed_category,
+            infrastructure_layer=a.infrastructure_layer, confidence=a.confidence,
+            bbox=",".join(str(round(x, 1)) for x in a.box), crop_path=a.crop_path,
+            annotated_path=result.annotated_path, ocr_text=a.ocr_text,
+            ocr_language=a.ocr_language, ocr_confidence=a.ocr_confidence,
+            condition=a.condition, defect=a.defect,
+            detector_name=a.detector_name, detector_version=a.detector_version,
+            latitude=point.latitude, longitude=point.longitude,
+            confidence_band=_band(a.confidence), processing_ms=result.processing_ms,
+            status=CandidateStatus.PENDING_VALIDATION,
+        ))
+        created += 1
     return created
 
 

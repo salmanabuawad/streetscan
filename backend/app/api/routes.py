@@ -802,7 +802,13 @@ def candidate_image(cand_id: int, db: Session = Depends(get_db)):
     needed; the captured image already lives on the server."""
     import cv2
     c = db.get(CandidateAsset, cand_id)
-    if not c or not c.image_id:
+    if not c:
+        raise HTTPException(404, "Candidate not found")
+    if not c.image_id:
+        # video-sourced candidate: there is no stored still, but the engine
+        # already wrote an annotated frame when it detected this asset
+        if c.annotated_path and Path(c.annotated_path).is_file():
+            return FileResponse(c.annotated_path, media_type="image/jpeg")
         raise HTTPException(404, "Candidate/image not found")
     img_row = db.get(CapturedImage, c.image_id)
     if not img_row or not Path(img_row.filename).is_file():

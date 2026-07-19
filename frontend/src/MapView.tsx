@@ -27,6 +27,10 @@ type MapData = {
   tracks: { route_id:number; vehicle_name:string; points:[number, number][] }[];
 };
 
+const statusLabels: Record<string,string> = {
+  unknown: 'לא נבדק', good: 'תקין', fair: 'סביר', poor: 'טעון טיפול', damaged: 'פגום',
+};
+
 export default function MapView({ layerLabels, assetTypeLabels }: {
   layerLabels: Record<string,string>;
   assetTypeLabels: Record<string,string>;
@@ -39,6 +43,11 @@ export default function MapView({ layerLabels, assetTypeLabels }: {
   const [assetTypes, setAssetTypes] = useState<{type:string; count:number}[]>([]);
   const [hidden, setHidden] = useState<Set<string>>(new Set());
   const [selected, setSelected] = useState<MapAsset | null>(null);
+  // notes read "candidate {id}; detector {name} {conf}" — surface it readably
+  const det = (() => {
+    const m = selected?.notes?.match(/detector (\S+) ([\d.]+)/);
+    return m ? { detector: m[1], conf: parseFloat(m[2]) } : null;
+  })();
 
   // show/hide type groups when the filter changes
   useEffect(() => {
@@ -184,13 +193,14 @@ export default function MapView({ layerLabels, assetTypeLabels }: {
           : <div className="media-loading">אין תמונת מקור לנכס זה</div>}
         <table className="asset-facts">
           <tbody>
-            <tr><th>שם</th><td>{selected.name}</td></tr>
+            {selected.name !== selected.asset_type &&
+              <tr><th>שם</th><td>{selected.name}</td></tr>}
             <tr><th>סוג</th><td>{assetTypeLabels[selected.asset_type] || selected.asset_type}</td></tr>
             <tr><th>שכבה</th><td>{layerLabels[selected.layer] || selected.layer}</td></tr>
-            <tr><th>סטטוס</th><td>{selected.status}</td></tr>
+            <tr><th>מצב</th><td>{statusLabels[selected.status] || selected.status}</td></tr>
             <tr><th>מקור</th><td>{selected.source === 'ai_validated' ? 'זיהוי AI מאושר' : selected.source || '—'}</td></tr>
             <tr><th>מיקום</th><td>{selected.lat.toFixed(6)}, {selected.lng.toFixed(6)} <em>(GPS טלפון — מקורב)</em></td></tr>
-            {selected.notes && <tr><th>פרטי זיהוי</th><td>{selected.notes}</td></tr>}
+            {det && <tr><th>זיהוי</th><td>{det.detector} · ביטחון {Math.round(det.conf * 100)}%</td></tr>}
           </tbody>
         </table>
       </div>

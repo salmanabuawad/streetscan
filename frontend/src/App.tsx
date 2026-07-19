@@ -45,7 +45,8 @@ type CapturedImageInfo = {
 };
 type UserInfo = { id:number; username:string; display_name:string; role:string };
 
-const assetTypeLabels: Record<string,string> = {
+// legacy/COCO-era types; the municipal types are merged in below from TRAINING_TYPES
+const LEGACY_ASSET_LABELS: Record<string,string> = {
   fire_hydrant:'ברז כיבוי', stop_sign:'תמרור עצור', traffic_light:'רמזור',
   bench:'ספסל', parking_meter:'מדחן', telephone_cabinet:'ארון תקשורת',
   electricity_pole:'עמוד חשמל', sewage_manhole:'שוחת ביוב', water_valve:'ברז מים'
@@ -72,7 +73,8 @@ const CATEGORY_OPTIONS = Object.keys(categoryLabels);
 const TRAINING_TYPES: { layer:string; label:string; types:[string,string][] }[] = [
   { layer:'electricity', label:'חשמל', types:[
     ['electricity_pole','עמוד חשמל'], ['transformer','שנאי'], ['electrical_cabinet','ארון חשמל'],
-    ['street_light','עמוד תאורה'], ['switchgear','לוח מיתוג'] ]},
+    ['street_light','עמוד תאורה'], ['switchgear','לוח מיתוג'],
+    ['utility_pole','עמוד תשתית משולב'] ]},
   { layer:'telecom', label:'תקשורת', types:[
     ['telecom_pole','עמוד תקשורת'], ['telecom_cabinet','ארון תקשורת'],
     ['junction_box','קופסת חיבורים'], ['fiber_marker','סמן סיב אופטי'] ]},
@@ -90,6 +92,9 @@ const TRAINING_TYPES: { layer:string; label:string; types:[string,string][] }[] 
 const TRAINING_TYPE_LABEL: Record<string,string> = Object.fromEntries(
   TRAINING_TYPES.flatMap(g => g.types)
 );
+// every type the detector can emit gets a Hebrew label, so the map/asset views
+// never fall back to the raw machine label
+const assetTypeLabels: Record<string,string> = { ...LEGACY_ASSET_LABELS, ...TRAINING_TYPE_LABEL };
 function trainingLayerOf(type: string): string {
   return TRAINING_TYPES.find(g => g.types.some(([v]) => v === type))?.layer || 'other';
 }
@@ -1284,8 +1289,10 @@ export default function App() {
             <thead><tr><th>שם</th><th>סוג</th><th>שכבה</th><th>מקור</th><th>תת־קרקעי</th></tr></thead>
             <tbody>
               {assets.map(a=><tr key={a.id}>
-                <td>{a.name}</td><td>{a.asset_type}</td><td>{layerLabels[a.layer]||a.layer}</td>
-                <td>{a.source}</td><td>{a.underground?'כן':'לא'}</td>
+                <td>{a.name}</td><td>{assetTypeLabels[a.asset_type]||a.asset_type}</td>
+                <td>{layerLabels[a.layer]||a.layer}</td>
+                <td>{a.source==='ai_validated'?'זיהוי AI מאושר':a.source}</td>
+                <td>{a.underground?'כן':'לא'}</td>
               </tr>)}
               {!assets.length && <tr><td colSpan={5}>אין עדיין נכסים. ניתן להוסיף דרך ה־API או לאחר אימות זיהויים.</td></tr>}
             </tbody>

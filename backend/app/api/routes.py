@@ -699,6 +699,43 @@ def get_candidate(cand_id: int, db: Session = Depends(get_db)):
 def _feedback(db, c, ftype, user, **kw):
     db.add(TrainingFeedback(candidate_id=c.id, feedback_type=ftype, user_id=user.id, **kw))
 
+
+# engine layers are free-form config strings; the GIS Asset layer is a fixed
+# enum, so anything outside it lands in public_space rather than failing.
+_LAYER_FALLBACK = {"hazard": InfrastructureLayer.ROAD, "building": InfrastructureLayer.PUBLIC_SPACE,
+                   "safety": InfrastructureLayer.PUBLIC_SPACE, "other": InfrastructureLayer.PUBLIC_SPACE}
+
+
+def _gis_layer(layer: str) -> InfrastructureLayer:
+    try:
+        return InfrastructureLayer(layer)
+    except ValueError:
+        return _LAYER_FALLBACK.get(layer, InfrastructureLayer.PUBLIC_SPACE)
+
+
+def promote_candidate_to_asset(db, c: CandidateAsset) -> Asset:
+    """An approved candidate becomes an official GIS asset. Observations grouped
+    into one proposed asset share a single asset instead of duplicating it."""
+    proposed = db.get(ProposedAsset, c.proposed_asset_id) if c.proposed_asset_id else None
+    if proposed and proposed.gis_asset_id:
+        existing = db.get(Asset, proposed.gis_asset_id)
+        if existing:
+            return existing
+    asset = Asset(
+        name=(c.asset_name or c.proposed_category),
+        asset_type=c.proposed_category,
+        layer=_gis_layer(c.infrastructure_layer),
+        latitude=c.latitude, longitude=c.longitude,
+        source="ai_validated",
+        notes=f"candidate {c.id}; detector {c.detector_name} {c.confidence}",
+    )
+    db.add(asset)
+    db.flush()
+    if proposed:
+        proposed.gis_asset_id = asset.id
+        proposed.status = CandidateStatus.APPROVED
+    return asset
+
 @router.post("/assets/candidates/{cand_id}/approve", dependencies=[VALIDATOR])
 def approve_candidate(cand_id: int, category: str | None = Form(None),
                       name: str | None = Form(None), db: Session = Depends(get_db),
@@ -717,8 +754,11 @@ def approve_candidate(cand_id: int, category: str | None = Form(None),
     if name is not None and name.strip():
         c.asset_name = name.strip()
     c.status = CandidateStatus.APPROVED
+    asset = promote_candidate_to_asset(db, c)   # approved => real GIS asset
     db.commit()
-    return _candidate_out(c)
+    out = _candidate_out(c)
+    out["gis_asset_id"] = asset.id
+    return out
 
 @router.post("/assets/candidates/{cand_id}/reject", dependencies=[VALIDATOR])
 def reject_candidate(cand_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):

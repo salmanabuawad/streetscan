@@ -22,6 +22,20 @@ SIGN_CATEGORIES = {"commercial_sign", "street_name_sign", "institution_sign", "t
                    "public_building_sign"}
 MAX_PER_CATEGORY = 3
 
+# A driving camera tilted upward makes the detector hallucinate tall poles on
+# blank sky. Every real asset has edges; measured empty-sky boxes score 0.00%
+# edge density while the weakest true positive scored 1.24%.
+MIN_EDGE_DENSITY_PCT = 1.0
+
+
+def _has_content(crop) -> bool:
+    """False for a featureless region (open sky, blank wall) that cannot be an asset."""
+    if crop is None or crop.size == 0:
+        return False
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    density = 100.0 * cv2.Canny(gray, 60, 160).mean() / 255.0
+    return density >= MIN_EDGE_DENSITY_PCT
+
 
 def _iou(a, b):
     ax1, ay1, ax2, ay2 = a; bx1, by1, bx2, by2 = b
@@ -76,6 +90,9 @@ class DefaultAssetAnalysisEngine(AssetAnalysisEngine):
             x1, y1 = max(0, x1), max(0, y1)
             x2, y2 = min(img.shape[1], x2), min(img.shape[0], y2)
             if x2 <= x1 or y2 <= y1:
+                continue
+            if not _has_content(img[y1:y2, x1:x2]):
+                result.warnings.append(f"dropped {d.proposed_category}: featureless region")
                 continue
 
             if self.ocr and d.proposed_category in SIGN_CATEGORIES:

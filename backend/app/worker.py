@@ -47,11 +47,15 @@ def build_openvocab_engine(db):
         annotated_dir=str(Path(settings.upload_dir) / "annotated"),
     )
 
-BAND_HIGH, BAND_MED = 0.10, 0.06
+# Detectors score on incomparable scales: OWL-ViT open-vocab logits sit near
+# 0.05, a trained YOLO reports 0.3-1.0. Banding both with one threshold made
+# every YOLO hit "high" and the band useless for review triage.
+BANDS = {"owlvit": (0.10, 0.06), "yolo": (0.70, 0.45)}
 
 
-def _band(score: float) -> str:
-    return "high" if score >= BAND_HIGH else "medium" if score >= BAND_MED else "low"
+def _band(score: float, detector: str = "yolo") -> str:
+    high, med = BANDS.get(detector.split("-")[0].lower(), BANDS["yolo"])
+    return "high" if score >= high else "medium" if score >= med else "low"
 
 
 def build_engine(db):
@@ -93,7 +97,7 @@ def process_image_engine(db, image: CapturedImage, engine) -> int:
             condition=a.condition, defect=a.defect, quality_score=image.blur_score,
             detector_name=a.detector_name, detector_version=a.detector_version,
             latitude=image.latitude, longitude=image.longitude,
-            confidence_band=_band(a.confidence), processing_ms=result.processing_ms,
+            confidence_band=_band(a.confidence, a.detector_name), processing_ms=result.processing_ms,
             status=CandidateStatus.PENDING_VALIDATION,
         ))
     return len(result.assets)
@@ -464,7 +468,7 @@ def _engine_frame(db, segment: VideoSegment, frame, point: GPSPoint,
             condition=a.condition, defect=a.defect,
             detector_name=a.detector_name, detector_version=a.detector_version,
             latitude=point.latitude, longitude=point.longitude,
-            confidence_band=_band(a.confidence), processing_ms=result.processing_ms,
+            confidence_band=_band(a.confidence, a.detector_name), processing_ms=result.processing_ms,
             status=CandidateStatus.PENDING_VALIDATION,
         ))
         created += 1

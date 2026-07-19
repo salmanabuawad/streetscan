@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { api } from './services/api';
+import { AuthImg } from './AuthMedia';
 
 // Buqata (בוקעאתא), northern Golan Heights
 const BUQATA_CENTER: [number, number] = [33.201, 35.779];
@@ -16,8 +17,11 @@ const LAYER_COLORS: Record<string, string> = {
   drainage: '#14b8a6', tunnel: '#94a3b8', road: '#64748b', public_space: '#22c55e',
 };
 
+type MapAsset = { id:number; name:string; asset_type:string; layer:string; status:string;
+  lat:number; lng:number; underground:boolean; source?:string; notes?:string; candidate_id?:number|null };
+
 type MapData = {
-  assets: { id:number; name:string; asset_type:string; layer:string; status:string; lat:number; lng:number; underground:boolean }[];
+  assets: MapAsset[];
   detections: { id:number; asset_type:string; layer:string; confidence:number; status:string; lat:number; lng:number }[];
   businesses: { id:number; name:string; category:string; confidence:number; status:string; lat:number; lng:number }[];
   tracks: { route_id:number; vehicle_name:string; points:[number, number][] }[];
@@ -34,6 +38,7 @@ export default function MapView({ layerLabels, assetTypeLabels }: {
   const typeLayers = useRef<Record<string, L.LayerGroup>>({});
   const [assetTypes, setAssetTypes] = useState<{type:string; count:number}[]>([]);
   const [hidden, setHidden] = useState<Set<string>>(new Set());
+  const [selected, setSelected] = useState<MapAsset | null>(null);
 
   // show/hide type groups when the filter changes
   useEffect(() => {
@@ -88,10 +93,9 @@ export default function MapView({ layerLabels, assetTypeLabels }: {
           radius: 8, weight: 2, color: LAYER_COLORS[a.layer] || '#e5e7eb',
           fillColor: LAYER_COLORS[a.layer] || '#e5e7eb', fillOpacity: a.underground ? 0.25 : 0.8,
           dashArray: a.underground ? '3 3' : undefined,
-        }).bindPopup(
-          `<b>${a.name}</b><br/>${assetTypeLabels[a.asset_type] || a.asset_type} · ${layerLabels[a.layer] || a.layer}` +
-          (a.underground ? '<br/>תת־קרקעי' : '')
-        );
+        });
+        // click opens the full detail modal (image + data), not a tiny popup
+        marker.on('click', () => setSelected(a));
         if (!typeLayers.current[a.asset_type]) typeLayers.current[a.asset_type] = L.layerGroup();
         typeLayers.current[a.asset_type].addLayer(marker);
         perType[a.asset_type] = (perType[a.asset_type] || 0) + 1;
@@ -168,6 +172,29 @@ export default function MapView({ layerLabels, assetTypeLabels }: {
       <span className="legend-item"><i style={{background:'#2563eb', borderRadius:2, height:4}}/> מסלול</span>
     </div>
     <div ref={mapEl} className="map-container"/>
+
+    {selected && <div className="modal-backdrop above-map" onClick={()=>setSelected(null)}>
+      <div className="modal asset-modal" onClick={e=>e.stopPropagation()}>
+        <div className="asset-modal-head">
+          <h3>{assetTypeLabels[selected.asset_type] || selected.asset_type}</h3>
+          <button className="icon-danger" onClick={()=>setSelected(null)}>✕</button>
+        </div>
+        {selected.candidate_id
+          ? <AuthImg path={`/assets/candidates/${selected.candidate_id}/image`} alt={selected.asset_type}/>
+          : <div className="media-loading">אין תמונת מקור לנכס זה</div>}
+        <table className="asset-facts">
+          <tbody>
+            <tr><th>שם</th><td>{selected.name}</td></tr>
+            <tr><th>סוג</th><td>{assetTypeLabels[selected.asset_type] || selected.asset_type}</td></tr>
+            <tr><th>שכבה</th><td>{layerLabels[selected.layer] || selected.layer}</td></tr>
+            <tr><th>סטטוס</th><td>{selected.status}</td></tr>
+            <tr><th>מקור</th><td>{selected.source === 'ai_validated' ? 'זיהוי AI מאושר' : selected.source || '—'}</td></tr>
+            <tr><th>מיקום</th><td>{selected.lat.toFixed(6)}, {selected.lng.toFixed(6)} <em>(GPS טלפון — מקורב)</em></td></tr>
+            {selected.notes && <tr><th>פרטי זיהוי</th><td>{selected.notes}</td></tr>}
+          </tbody>
+        </table>
+      </div>
+    </div>}
     {counts && <p className="map-counts">
       {counts.assets} נכסים · {counts.detections} זיהויים · {counts.businesses} עסקים · {counts.tracks} מסלולים עם GPS
       {!counts.assets && !counts.detections && !counts.businesses && !counts.tracks && ' — המפה תתמלא ככל שיוקלטו מסלולים ויאושרו נכסים'}

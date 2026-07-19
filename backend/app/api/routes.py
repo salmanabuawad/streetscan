@@ -609,6 +609,9 @@ def map_data(db: Session = Depends(get_db)):
             "id": a.id, "name": a.name, "asset_type": a.asset_type,
             "layer": a.layer.value, "status": a.status.value,
             "lat": a.latitude, "lng": a.longitude, "underground": a.underground,
+            "source": a.source, "notes": a.notes,
+            # link back to the detection frame so the map can show the evidence
+            "candidate_id": _candidate_id_from_notes(a.notes),
         } for a in assets],
         "detections": [{
             "id": d.id, "asset_type": d.proposed_asset_type, "layer": d.proposed_layer.value,
@@ -704,6 +707,16 @@ def _feedback(db, c, ftype, user, **kw):
 # enum, so anything outside it lands in public_space rather than failing.
 _LAYER_FALLBACK = {"hazard": InfrastructureLayer.ROAD, "building": InfrastructureLayer.PUBLIC_SPACE,
                    "safety": InfrastructureLayer.PUBLIC_SPACE, "other": InfrastructureLayer.PUBLIC_SPACE}
+
+
+def _candidate_id_from_notes(notes: str | None) -> int | None:
+    """Assets promoted from a detection carry 'candidate {id}; ...' in notes."""
+    if not notes or not notes.startswith("candidate "):
+        return None
+    try:
+        return int(notes.split(";")[0].replace("candidate ", "").strip())
+    except ValueError:
+        return None
 
 
 def _gis_layer(layer: str) -> InfrastructureLayer:

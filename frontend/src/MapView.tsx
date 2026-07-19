@@ -30,6 +30,28 @@ export default function MapView({ layerLabels, assetTypeLabels }: {
   const mapEl = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<L.Map | null>(null);
   const [counts, setCounts] = useState<{assets:number; detections:number; businesses:number; tracks:number} | null>(null);
+  // one Leaflet layer group per asset type, so the dropdown can toggle them
+  const typeLayers = useRef<Record<string, L.LayerGroup>>({});
+  const [assetTypes, setAssetTypes] = useState<{type:string; count:number}[]>([]);
+  const [hidden, setHidden] = useState<Set<string>>(new Set());
+
+  // show/hide type groups when the filter changes
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    for (const [type, group] of Object.entries(typeLayers.current)) {
+      if (hidden.has(type)) map.removeLayer(group);
+      else group.addTo(map);
+    }
+  }, [hidden, assetTypes]);
+
+  function toggleType(type: string) {
+    setHidden(prev => {
+      const next = new Set(prev);
+      next.has(type) ? next.delete(type) : next.add(type);
+      return next;
+    });
+  }
 
   useEffect(() => {
     if (!mapEl.current || mapRef.current) return;
@@ -59,17 +81,25 @@ export default function MapView({ layerLabels, assetTypeLabels }: {
         bounds.push(...t.points);
       }
 
+      // group asset markers by type so they can be filtered from the dropdown
+      const perType: Record<string, number> = {};
       for (const a of data.assets) {
-        L.circleMarker([a.lat, a.lng], {
+        const marker = L.circleMarker([a.lat, a.lng], {
           radius: 8, weight: 2, color: LAYER_COLORS[a.layer] || '#e5e7eb',
           fillColor: LAYER_COLORS[a.layer] || '#e5e7eb', fillOpacity: a.underground ? 0.25 : 0.8,
           dashArray: a.underground ? '3 3' : undefined,
         }).bindPopup(
           `<b>${a.name}</b><br/>${assetTypeLabels[a.asset_type] || a.asset_type} · ${layerLabels[a.layer] || a.layer}` +
           (a.underground ? '<br/>תת־קרקעי' : '')
-        ).addTo(map);
+        );
+        if (!typeLayers.current[a.asset_type]) typeLayers.current[a.asset_type] = L.layerGroup();
+        typeLayers.current[a.asset_type].addLayer(marker);
+        perType[a.asset_type] = (perType[a.asset_type] || 0) + 1;
         bounds.push([a.lat, a.lng]);
       }
+      Object.values(typeLayers.current).forEach(g => g.addTo(map));
+      setAssetTypes(Object.entries(perType).map(([type, count]) => ({ type, count }))
+        .sort((a, b) => b.count - a.count));
 
       for (const d of data.detections) {
         L.circleMarker([d.lat, d.lng], {
@@ -108,7 +138,28 @@ export default function MapView({ layerLabels, assetTypeLabels }: {
     return () => { map.remove(); mapRef.current = null; };
   }, []);
 
+  const shownTypes = assetTypes.filter(t => !hidden.has(t.type)).length;
+
   return <div>
+    <div className="map-toolbar">
+      <details className="type-filter">
+        <summary>
+          סוגי נכסים במפה ({shownTypes}/{assetTypes.length})
+        </summary>
+        <div className="type-filter-menu">
+          <div className="type-filter-actions">
+            <button type="button" onClick={()=>setHidden(new Set())}>הצג הכל</button>
+            <button type="button" onClick={()=>setHidden(new Set(assetTypes.map(t=>t.type)))}>הסתר הכל</button>
+          </div>
+          {!assetTypes.length && <div className="type-filter-empty">אין נכסים ממופים</div>}
+          {assetTypes.map(t => <label key={t.type}>
+            <input type="checkbox" checked={!hidden.has(t.type)} onChange={()=>toggleType(t.type)}/>
+            <span>{assetTypeLabels[t.type] || t.type}</span>
+            <em>{t.count}</em>
+          </label>)}
+        </div>
+      </details>
+    </div>
     <div className="map-legend">
       {Object.entries(LAYER_COLORS).map(([k, c]) =>
         <span key={k} className="legend-item"><i style={{background:c}}/> {layerLabels[k] || k}</span>)}

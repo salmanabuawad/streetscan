@@ -116,6 +116,9 @@ def to_naive_utc(dt: datetime) -> datetime:
 
 
 def nearest_gps(points: list[GPSPoint], ts: datetime) -> GPSPoint | None:
+    # only consider fixes inside the survey area; a stray far-away fix must not
+    # geolocate an asset (it would land the asset ~165km off the map)
+    points = [p for p in points if settings.in_survey_area(p.latitude, p.longitude)]
     if not points:
         return None
     best = min(points, key=lambda p: abs((to_naive_utc(p.captured_at) - ts).total_seconds()))

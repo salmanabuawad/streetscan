@@ -598,11 +598,14 @@ def map_data(db: Session = Depends(get_db)):
             select(GPSPoint).where(GPSPoint.route_id == route.id)
             .order_by(GPSPoint.captured_at).limit(5000)
         ).all()
-        if points:
+        # drop stray fixes outside Buqata so a track can't shoot off-map
+        pts = [[p.latitude, p.longitude] for p in points
+               if settings.in_survey_area(p.latitude, p.longitude)]
+        if pts:
             tracks.append({
                 "route_id": route.id,
                 "vehicle_name": route.vehicle_name,
-                "points": [[p.latitude, p.longitude] for p in points],
+                "points": pts,
             })
     return {
         "assets": [{
@@ -612,7 +615,7 @@ def map_data(db: Session = Depends(get_db)):
             "source": a.source, "notes": a.notes,
             # link back to the detection frame so the map can show the evidence
             "candidate_id": _candidate_id_from_notes(a.notes),
-        } for a in assets],
+        } for a in assets if settings.in_survey_area(a.latitude, a.longitude)],
         "detections": [{
             "id": d.id, "asset_type": d.proposed_asset_type, "layer": d.proposed_layer.value,
             "confidence": d.confidence, "status": d.status.value,

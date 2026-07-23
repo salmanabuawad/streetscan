@@ -598,14 +598,16 @@ def map_data(db: Session = Depends(get_db)):
             select(GPSPoint).where(GPSPoint.route_id == route.id)
             .order_by(GPSPoint.captured_at).limit(5000)
         ).all()
-        # drop stray fixes outside Buqata so a track can't shoot off-map
+        # drop stray fixes outside Buqata, then break the line wherever the
+        # signal jumped so we never draw a straight segment across a gap the
+        # vehicle didn't actually drive
         pts = [[p.latitude, p.longitude] for p in points
                if settings.in_survey_area(p.latitude, p.longitude)]
-        if pts:
+        for seg in _split_track(pts):
             tracks.append({
                 "route_id": route.id,
                 "vehicle_name": route.vehicle_name,
-                "points": pts,
+                "points": seg,
             })
     return {
         "assets": [{
@@ -710,6 +712,37 @@ def _feedback(db, c, ftype, user, **kw):
 # enum, so anything outside it lands in public_space rather than failing.
 _LAYER_FALLBACK = {"hazard": InfrastructureLayer.ROAD, "building": InfrastructureLayer.PUBLIC_SPACE,
                    "safety": InfrastructureLayer.PUBLIC_SPACE, "other": InfrastructureLayer.PUBLIC_SPACE}
+
+
+# Consecutive fixes farther apart than this mean a dropped-then-reacquired
+# signal, not real travel (a vehicle at 108 km/h moves ~60m between 2s fixes).
+# Break the drawn line there rather than cutting a straight gash across terrain.
+TRACK_BREAK_M = 120.0
+
+
+def _haversine_m(a: list[float], b: list[float]) -> float:
+    import math
+    dlat = (a[0] - b[0]) * 111320.0
+    dlng = (a[1] - b[1]) * 111320.0 * math.cos(math.radians(a[0]))
+    return math.hypot(dlat, dlng)
+
+
+def _split_track(pts: list[list[float]]) -> list[list[list[float]]]:
+    """Split a point sequence into contiguous runs, breaking at GPS jumps.
+    Single-point runs are dropped (a polyline needs two points)."""
+    if not pts:
+        return []
+    segments, cur = [], [pts[0]]
+    for prev, p in zip(pts, pts[1:]):
+        if _haversine_m(prev, p) > TRACK_BREAK_M:
+            if len(cur) > 1:
+                segments.append(cur)
+            cur = [p]
+        else:
+            cur.append(p)
+    if len(cur) > 1:
+        segments.append(cur)
+    return segments
 
 
 def _candidate_id_from_notes(notes: str | None) -> int | None:

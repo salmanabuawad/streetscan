@@ -214,6 +214,10 @@ th{color:#94a3b8}
 }
 
 /* ===== Video frame annotation ===== */
+.section-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap}
+.head-actions{display:flex;gap:8px;flex-wrap:wrap}
+.btn-secondary{display:inline-flex;align-items:center;gap:6px;background:#0f2038;border:1px solid #274870;color:#cfe0f5;border-radius:9px;padding:8px 12px;cursor:pointer;font-size:13px}
+.btn-secondary:hover{background:#16304f}
 .annotate-video-btn{display:inline-flex;align-items:center;gap:6px;background:#172554;border:1px solid #1d4ed8;color:#bfdbfe;border-radius:9px;padding:6px 9px;cursor:pointer;font-size:12.5px}
 .annotate-video-btn:hover{background:#1e3a8a}
 .video-annotator-modal{max-width:900px}

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Camera, MapPin, Database, Route as RouteIcon, UploadCloud, StopCircle, PlayCircle, ScanSearch, Check, X, Film, Trash2, LogOut, Gauge, Compass, BatteryMedium, Wifi, WifiOff, ImageIcon, Store, GraduationCap, Boxes, Tags, StepBack, StepForward } from 'lucide-react';
-import { api, getToken, setToken, fetchMediaUrl } from './services/api';
+import { api, getToken, setToken, fetchMediaUrl, downloadFile } from './services/api';
 import { queueSegment, queueGpsPoint, queueImage, pendingCounts, startAutoFlush } from './services/offlineQueue';
 import { AuthImg, AuthVideo } from './AuthMedia';
 import Login from './Login';
@@ -1277,7 +1277,19 @@ export default function App() {
       </section>}
 
       {tab==='assets' && <section>
-        <div className="section-head"><div><h2>מאגר נכסי תשתית</h2><p>נכסים גלויים ותשתיות תת־קרקעיות בשכבות GIS.</p></div></div>
+        <div className="section-head">
+          <div><h2>מאגר נכסי תשתית</h2><p>נכסים גלויים ותשתיות תת־קרקעיות בשכבות GIS.</p></div>
+          <div className="head-actions">
+            <button className="btn-secondary" title="ייצוא לשכבות ה־GIS הרשמיות של המועצה, בקואורדינטות רשת ישראל (ITM)"
+              onClick={()=>downloadFile('/export/gis?format=csv','buqata_assets_itm.csv').catch(e=>alert('שגיאת ייצוא: '+e))}>
+              <Database size={15}/> ייצוא ל־GIS (Excel/ITM)
+            </button>
+            <button className="btn-secondary" title="ייצוא GeoJSON ברשת ישראל 2039 לייבוא ישיר ל־ArcGIS"
+              onClick={()=>downloadFile('/export/gis?format=geojson','buqata_assets_itm.geojson').catch(e=>alert('שגיאת ייצוא: '+e))}>
+              <Boxes size={15}/> GeoJSON (ArcGIS)
+            </button>
+          </div>
+        </div>
         <div className="layer-grid">
           {dashboard?.layers.map(layer => <div className="layer-card" key={layer}>
             <strong>{layerLabels[layer] || layer}</strong>

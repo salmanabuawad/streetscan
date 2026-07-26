@@ -40,4 +40,17 @@ export async function fetchMediaUrl(path: string): Promise<string> {
   return URL.createObjectURL(await response.blob());
 }
 
+// Authenticated file download: fetch as a blob (auth header) then trigger a
+// browser save, since a plain <a href> can't carry the token.
+export async function downloadFile(path: string, filename: string): Promise<void> {
+  const response = await fetch(`${API_URL}${path}`, { headers: authHeaders() });
+  if (response.status === 401) handleUnauthorized();
+  if (!response.ok) throw new Error(`download ${response.status}`);
+  const url = URL.createObjectURL(await response.blob());
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+}
+
 export { API_URL };

@@ -6,3 +6,4 @@ pydantic-settings==2.10.1
 python-multipart==0.0.20
 PyJWT==2.10.1
 bcrypt==4.3.0
+pyproj>=3.6

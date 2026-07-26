@@ -883,6 +883,43 @@ def export_geojson(only_approved: bool = False, db: Session = Depends(get_db)):
         })
     return {"type": "FeatureCollection", "features": feats}
 
+
+@router.get("/export/gis", dependencies=[VALIDATOR])
+def export_gis(format: str = "geojson", db: Session = Depends(get_db)):
+    """Export located GIS assets for handoff to the Maale Hermon municipal GIS:
+    grouped under the official Buqata layer names and reprojected to Israeli TM
+    (EPSG:2039). format=geojson (ITM-CRS FeatureCollection) or csv (Excel-ready,
+    easting/northing columns). Positions are approximate phone GPS."""
+    from app import gis_export
+    from fastapi import Response as _Resp
+    assets = db.scalars(
+        select(Asset).where(Asset.latitude.is_not(None), Asset.longitude.is_not(None))
+        .order_by(Asset.asset_type, Asset.id)
+    ).all()
+    rows = gis_export.asset_rows(assets, lambda a: _candidate_id_from_notes(a.notes))
+    if format == "csv":
+        return _Resp(
+            content=gis_export.rows_to_csv(rows), media_type="text/csv",
+            headers={"Content-Disposition": "attachment; filename=buqata_assets_itm.csv"},
+        )
+    return gis_export.rows_to_geojson(rows)
+
+
+@router.get("/export/gis/summary", dependencies=[VALIDATOR])
+def export_gis_summary(db: Session = Depends(get_db)):
+    """Per-official-layer counts, so a reviewer sees what the handoff contains."""
+    from app import gis_export
+    assets = db.scalars(
+        select(Asset).where(Asset.latitude.is_not(None), Asset.longitude.is_not(None))
+    ).all()
+    by_layer: dict[str, int] = {}
+    for a in assets:
+        lyr = gis_export.official_layer(a.asset_type)
+        by_layer[lyr] = by_layer.get(lyr, 0) + 1
+    return {"total": sum(by_layer.values()), "crs": "EPSG:2039 (Israeli TM Grid)",
+            "by_official_layer": by_layer}
+
+
 @router.post("/assets/training/export", dependencies=[VALIDATOR])
 def export_training_dataset(db: Session = Depends(get_db)):
     """Turn human-validated candidates into a YOLO dataset (the self-improvement

@@ -142,6 +142,7 @@ def ingest_observation(db: Session, *, category_key: str, confidence: float,
         lat, lng, acc = estimate_position(vehicle_lat, vehicle_lng, heading_deg, camera)
 
     is_leaning = category_key == "leaning_pole"
+    is_construction = category_key in {"construction_debris", "construction_materials"}
     severity = severity_override or (compute_severity(
         cat, blocks_path=blocks_path, near_sensitive=near_sensitive,
         is_danger=is_danger, estimated_size=estimated_size,
@@ -178,7 +179,9 @@ def ingest_observation(db: Session, *, category_key: str, confidence: float,
         # when the category allows it AND confidence is high.
         # AI suggestions never directly become OPEN municipal hazards. Human/staff
         # intake may still open according to category policy.
-        if is_leaning:
+        if is_leaning or (is_construction and source == HazardSource.AI):
+            # Construction material/debris requires persistence or staff review:
+            # one image cannot establish abandonment, illegality, or public-space use.
             status = HazardStatus.SUSPECTED
         elif source == HazardSource.AI:
             status = HazardStatus.PENDING_REVIEW
@@ -250,6 +253,15 @@ def ingest_observation(db: Session, *, category_key: str, confidence: float,
                          f"multi-frame tilt confirmed: median {hz.tilt_degrees}°, stddev {spread:.1f}°")
             if old_tilt is not None and hz.tilt_degrees > old_tilt + 2.0:
                 hz.tilt_worsening = True
+    # Construction candidates need independent-day persistence before entering
+    # the normal review queue. Repeated frames from one drive are supporting
+    # evidence only and do not establish an ongoing public-space violation.
+    if is_construction and hz.status == HazardStatus.SUSPECTED:
+        if hz.distinct_scan_days >= 2 and hz.observation_count >= 2:
+            hz.status = HazardStatus.PENDING_REVIEW
+            _log(db, hz, prev_status.value, hz.status.value,
+                 "construction candidate persisted across independent scan days")
+
     # a hazard we thought was fixed showing up again -> reopen
     if hz.status == HazardStatus.LIKELY_FIXED:
         hz.status = HazardStatus.REOPENED

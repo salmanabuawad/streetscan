@@ -132,15 +132,21 @@ def process_image_hazards(db, image: CapturedImage, engine) -> int:
     )
     result = engine.analyze_image(image.filename, ctx, frame=frame)
     made = 0
+    from app.hazard_validation import validate_hazard_detection
     for a in result.assets:
+        validation = validate_hazard_detection(frame, a.box, a.confidence, a.proposed_category)
+        merged_flags = ",".join(filter(None, [flags, *validation.reasons])) or None
+        effective_confidence = min(a.confidence, validation.confidence)
+        quality_for_ingest = quality if validation.passed else "unusable"
         _obs, hz = hsvc.ingest_observation(
-            db, category_key=a.proposed_category, confidence=a.confidence,
+            db, category_key=a.proposed_category, confidence=effective_confidence,
             vehicle_lat=image.latitude, vehicle_lng=image.longitude,
             heading_deg=image.heading_deg, bbox=",".join(str(round(x, 1)) for x in a.box),
             crop_path=a.crop_path, annotated_path=result.annotated_path,
             route_id=image.route_id, image_id=image.id,
-            detector_name="openvocab", detector_version="owlvit",
-            image_quality=quality, quality_flags=flags,
+            detector_name="openvocab", detector_version="owlvit+scene-validation-v1",
+            image_quality=quality_for_ingest, quality_flags=merged_flags,
+            blocks_path=validation.blocks_path, estimated_size=validation.estimated_size,
             image_score=image_quality_score(frame, a.box),
             captured_at=image.captured_at,
         )
@@ -242,16 +248,22 @@ def process_segment_hazards(db, segment: VideoSegment, hz_engine, asset_engine) 
                             captured_at=frame_time, annotated_path=ares.annotated_path)
                     # Hazard Engine (OWL-ViT open-vocab)
                     hres = hz_engine.analyze_image("", ctx, frame=frame)
+                    from app.hazard_validation import validate_hazard_detection
                     for a in hres.assets:
+                        validation = validate_hazard_detection(frame, a.box, a.confidence, a.proposed_category)
+                        merged_flags = ",".join(filter(None, [flags, *validation.reasons])) or None
+                        effective_confidence = min(a.confidence, validation.confidence)
+                        quality_for_ingest = quality if validation.passed else "unusable"
                         _o, hz = hsvc.ingest_observation(
-                            db, category_key=a.proposed_category, confidence=a.confidence,
+                            db, category_key=a.proposed_category, confidence=effective_confidence,
                             vehicle_lat=point.latitude, vehicle_lng=point.longitude,
                             heading_deg=point.heading_deg,
                             bbox=",".join(str(round(x, 1)) for x in a.box),
                             crop_path=a.crop_path, annotated_path=hres.annotated_path,
                             route_id=segment.route_id, image_id=None, video_segment_id=segment.id,
-                            detector_name="openvocab", detector_version="owlvit",
-                            image_quality=quality, quality_flags=flags,
+                            detector_name="openvocab", detector_version="owlvit+scene-validation-v1",
+                            image_quality=quality_for_ingest, quality_flags=merged_flags,
+                            blocks_path=validation.blocks_path, estimated_size=validation.estimated_size,
                             image_score=image_quality_score(frame, a.box), captured_at=frame_time)
                         if hz:
                             made += 1

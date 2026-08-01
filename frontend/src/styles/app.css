@@ -300,3 +300,17 @@ th{color:#94a3b8}
 .hz-row{cursor:pointer}.hz-row:hover{background:#0f1c33}
 .hz-sev-pill,.hz-badge{white-space:nowrap}
 .hz-sev-pill{color:#fff;font-size:11.5px;padding:2px 9px;border-radius:20px}
+
+/* ===== leaning-pole tilt overlay ===== */
+.tilt-frame{position:relative;width:100%;height:100%;background:#000}
+.hz-card-media .tilt-frame{aspect-ratio:auto;height:100%}
+.tilt-svg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+.tilt-box{fill:none;stroke:#e11d48;stroke-width:3;opacity:.9}
+.tilt-vert{stroke:#22d3ee;stroke-width:3;stroke-dasharray:8 6}
+.tilt-axis{stroke:#f59e0b;stroke-width:4}
+.tilt-arc{fill:none;stroke:#fbbf24;stroke-width:3}
+.tilt-label{fill:#fde68a;font-size:34px;font-weight:800;paint-order:stroke;stroke:#000;stroke-width:6px}
+.hz-tilt-chip{background:#4c0519;color:#fecdd3;padding:1px 8px;border-radius:10px;font-weight:600}
+.hz-inspect-note{background:#3b0a14;border:1px solid #7f1d1d;color:#fecdd3;border-radius:10px;padding:9px 12px;margin:10px 0;font-size:13px}
+.hz-worsen{color:#f87171;font-weight:700;font-size:12px}
+.hz-modal .tilt-frame.wide{max-height:44vh;aspect-ratio:16/10;border-radius:10px;overflow:hidden}

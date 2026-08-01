@@ -60,6 +60,8 @@ def _hazard_dict(h: Hazard, cats: dict) -> dict:
         "age_days": (datetime.utcnow() - h.first_detected_at).days,
         "estimated_size": h.estimated_size, "blocks_path": h.blocks_path,
         "near_sensitive": h.near_sensitive, "is_danger": h.is_danger,
+        "tilt_degrees": h.tilt_degrees, "base_visible": h.base_visible,
+        "tilt_worsening": h.tilt_worsening,
         "duplicate_of": h.duplicate_of, "best_observation_id": h.best_observation_id,
     }
 
@@ -95,9 +97,12 @@ def review_queue(limit: int = 200, db: Session = Depends(get_db)):
             "band": o.confidence_band, "severity": o.severity.value if o.severity else None,
             "lat": o.latitude, "lng": o.longitude, "location_accuracy_m": o.location_accuracy_m,
             "image_quality": o.image_quality, "quality_flags": o.quality_flags,
-            "detector": o.detector_name, "camera_id": o.camera_id,
+            "detector": o.detector_name, "camera_id": o.camera_id, "subtype": o.subtype,
             "captured_at": o.captured_at.isoformat() if o.captured_at else None,
             "has_image": bool(o.annotated_path or o.crop_path),
+            "tilt_degrees": o.tilt_degrees, "baseline_deg": o.baseline_deg,
+            "base_visible": o.base_visible, "cables_condition": o.cables_condition,
+            "bbox": o.bbox, "tilt_axis": o.tilt_axis,
         })
     return {"count": len(out), "items": out}
 
@@ -263,6 +268,9 @@ def hazard_detail(hazard_id: int, user=Depends(get_current_user), db: Session = 
         "captured_at": o.captured_at.isoformat() if o.captured_at else None,
         "quality_flags": o.quality_flags, "has_image": bool(o.annotated_path or o.crop_path),
         "lat": o.latitude, "lng": o.longitude,
+        "tilt_degrees": o.tilt_degrees, "baseline_deg": o.baseline_deg,
+        "base_visible": o.base_visible, "cables_condition": o.cables_condition,
+        "bbox": o.bbox, "tilt_axis": o.tilt_axis,
     } for o in obs]
     d["history"] = [{
         "old": s.old_status, "new": s.new_status, "note": s.note,

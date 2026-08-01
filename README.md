@@ -2,6 +2,11 @@
 
 פיילוט למיפוי נכסי תשתית ומפגעים באמצעות טלפון חכם המותקן על רכב מועצה.
 
+> **Detection architecture:** two separate engines — the **Asset Detection Engine**
+> (with domain sub-engines: electricity, communication, water, …) and the
+> **Hazard Detection Engine** (OWL-ViT + tilt/quality analyzers + lifecycle),
+> over a shared pluggable adapter interface. See [docs/ENGINES.md](docs/ENGINES.md).
+
 ## Stack
 
 - Frontend: React + Vite + TypeScript

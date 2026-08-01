@@ -12,7 +12,36 @@ const STATUS_HE: Record<string,string> = {
   likely_fixed:'כנראה תוקן', closed:'סגור', reopened:'נפתח מחדש', rejected:'נדחה',
 };
 const SOURCE_HE: Record<string,string> = { ai:'AI', staff:'עובד', resident:'תושב', hotline:'מוקד' };
-const DEPARTMENTS = ['הנדסה','מים וביוב','תברואה','פיקוח','תחבורה','שפ"ע','רישוי עסקים','חשמל ותחזוקה','מוקד חירום'];
+const DEPARTMENTS = ['הנדסה','מים וביוב','תברואה','פיקוח','תחבורה','שפ"ע','רישוי עסקים','חשמל ותחזוקה','חברת חשמל','ספק תקשורת','מוקד חירום'];
+
+// Draws the pole's central axis, a true-vertical reference, the tilt arc and the
+// angle over the source image — so a reviewer sees WHY the AI flagged a lean.
+function TiltOverlay({ path, obs, className }: { path:string; obs:any; className?:string }) {
+  const [dim, setDim] = useState<{w:number;h:number}|null>(null);
+  const axis = String(obs.tilt_axis||'').split(',').map(Number);
+  const bbox = String(obs.bbox||'').split(',').map(Number);
+  const ok = axis.length===4 && !axis.some(isNaN);
+  let base=[0,0], top=[0,0];
+  if (ok) { [base, top] = axis[1] > axis[3] ? [[axis[0],axis[1]],[axis[2],axis[3]]] : [[axis[2],axis[3]],[axis[0],axis[1]]]; }
+  const len = ok ? Math.hypot(top[0]-base[0], top[1]-base[1]) : 0;
+  const vtop = [base[0], base[1]-len];
+  const r = len*0.45;
+  const a1 = Math.atan2(vtop[1]-base[1], vtop[0]-base[0]);
+  const a2 = Math.atan2(top[1]-base[1], top[0]-base[0]);
+  const p1 = [base[0]+r*Math.cos(a1), base[1]+r*Math.sin(a1)];
+  const p2 = [base[0]+r*Math.cos(a2), base[1]+r*Math.sin(a2)];
+  return <div className={`tilt-frame ${className||''}`}>
+    <AuthImg path={path} alt="" style={{objectFit:'contain',width:'100%',height:'100%'}}
+      onLoad={(e:any)=>setDim({w:e.target.naturalWidth,h:e.target.naturalHeight})}/>
+    {dim && ok && <svg className="tilt-svg" viewBox={`0 0 ${dim.w} ${dim.h}`} preserveAspectRatio="xMidYMid meet">
+      {bbox.length===4 && <rect x={bbox[0]} y={bbox[1]} width={bbox[2]-bbox[0]} height={bbox[3]-bbox[1]} className="tilt-box"/>}
+      <line x1={base[0]} y1={base[1]} x2={vtop[0]} y2={vtop[1]} className="tilt-vert"/>
+      <line x1={base[0]} y1={base[1]} x2={top[0]} y2={top[1]} className="tilt-axis"/>
+      <path d={`M ${p1[0]} ${p1[1]} A ${r} ${r} 0 0 1 ${p2[0]} ${p2[1]}`} className="tilt-arc"/>
+      <text x={base[0]+r*0.4} y={base[1]-r*0.7} className="tilt-label">{obs.tilt_degrees}°</text>
+    </svg>}
+  </div>;
+}
 
 type Cat = { key:string; name_he:string; group:string; color:string; icon:string; department:string };
 type Hazard = {
@@ -23,12 +52,15 @@ type Hazard = {
   first_detected_at:string; last_detected_at:string; age_days:number;
   estimated_size:string|null; blocks_path:boolean; near_sensitive:boolean; is_danger:boolean;
   best_observation_id:number|null;
+  tilt_degrees?:number|null; base_visible?:boolean|null; tilt_worsening?:boolean;
 };
 type ReviewItem = {
   id:number; hazard_id:number|null; category_key:string; category_he:string; color:string;
   confidence:number; band:string; severity:string|null; lat:number|null; lng:number|null;
   location_accuracy_m:number|null; image_quality:string|null; quality_flags:string|null;
-  detector:string; captured_at:string|null; has_image:boolean;
+  detector:string; captured_at:string|null; has_image:boolean; subtype?:string|null;
+  tilt_degrees?:number|null; baseline_deg?:number|null; base_visible?:boolean|null;
+  cables_condition?:string|null; bbox?:string|null; tilt_axis?:string|null;
 };
 
 const BUQATA: [number,number] = [33.2007, 35.7772];
@@ -117,8 +149,10 @@ function Review({catBy}:{catBy:Record<string,Cat>}) {
       const cat = catBy[o.category_key];
       return <div className="hz-card" key={o.id}>
         <div className="hz-card-media">
-          {o.has_image ? <AuthImg path={`/hazards/observations/${o.id}/image`} alt={o.category_he}/>
-                       : <div className="hz-noimg">אין תמונה</div>}
+          {!o.has_image ? <div className="hz-noimg">אין תמונה</div>
+            : o.category_key==='leaning_pole' && o.tilt_axis
+              ? <TiltOverlay path={`/hazards/observations/${o.id}/image`} obs={o}/>
+              : <AuthImg path={`/hazards/observations/${o.id}/image`} alt={o.category_he}/>}
           <span className="hz-badge" style={{background:SEV_COLOR[o.severity||'medium']}}>{SEV_HE[o.severity||'medium']}</span>
         </div>
         <div className="hz-card-body">
@@ -129,7 +163,9 @@ function Review({catBy}:{catBy:Record<string,Cat>}) {
             </select>
           </div>
           <div className="hz-card-meta">
-            <span>ביטחון {Math.round(o.confidence*100)}%</span>
+            {o.tilt_degrees!=null
+              ? <span className="hz-tilt-chip">נטייה {o.tilt_degrees}°{o.base_visible===false?' · בסיס לא נראה':''}</span>
+              : <span>ביטחון {Math.round(o.confidence*100)}%</span>}
             <span className={`hz-band hz-band-${o.band}`}>{o.band}</span>
             {o.quality_flags && <span className="hz-flag">⚠ {o.quality_flags}</span>}
             {o.lat!=null && <span>±{Math.round(o.location_accuracy_m||0)}מ׳</span>}
@@ -213,9 +249,14 @@ function HazardModal({h, catBy, onClose, onChanged}:{h:Hazard; catBy:Record<stri
         <h3><span className="hz-dot" style={{background:h.color}}/>{h.category_he}</h3>
         <button className="icon-danger" onClick={onClose}>✕</button>
       </div>
-      {bestObs?.has_image
-        ? <AuthImg path={`/hazards/observations/${bestObs.id}/image`} alt={h.category_he}/>
-        : <div className="hz-noimg wide">אין תמונת זיהוי</div>}
+      {!bestObs?.has_image
+        ? <div className="hz-noimg wide">אין תמונת זיהוי</div>
+        : h.category_key==='leaning_pole' && bestObs.tilt_axis
+          ? <TiltOverlay path={`/hazards/observations/${bestObs.id}/image`} obs={bestObs} className="wide"/>
+          : <AuthImg path={`/hazards/observations/${bestObs.id}/image`} alt={h.category_he}/>}
+      {h.category_key==='leaning_pole' && <div className="hz-inspect-note">
+        זוהתה נטייה חריגה בעמוד. נדרשת בדיקת שטח לאימות מצב הבסיס ורמת הסיכון.
+      </div>}
       <div className="hz-modal-badges">
         <span className="hz-badge" style={{background:SEV_COLOR[h.severity]}}>{SEV_HE[h.severity]}</span>
         <span className="hz-badge alt">{STATUS_HE[h.status]}</span>
@@ -224,6 +265,8 @@ function HazardModal({h, catBy, onClose, onChanged}:{h:Hazard; catBy:Record<stri
         {h.near_sensitive && <span className="hz-badge">סמוך למוסד</span>}
       </div>
       <table className="hz-facts"><tbody>
+        {h.tilt_degrees!=null && <tr><th>זווית נטייה</th><td>{h.tilt_degrees}° {h.tilt_worsening && <span className="hz-worsen">מחמיר ↑</span>}</td></tr>}
+        {h.category_key==='leaning_pole' && <tr><th>בסיס העמוד</th><td>{h.base_visible?'נראה בתמונה':'לא נראה — דרושה בדיקת שטח'}</td></tr>}
         <tr><th>מקור</th><td>{SOURCE_HE[h.source]||h.source}</td></tr>
         <tr><th>ביטחון</th><td>{Math.round(h.confidence*100)}%</td></tr>
         <tr><th>זוהה</th><td>{h.observation_count} פעמים · {h.distinct_scan_days} ימי סריקה</td></tr>

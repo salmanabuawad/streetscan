@@ -97,6 +97,9 @@ def ingest_observation(db: Session, *, category_key: str, confidence: float,
                        blocks_path: bool = False, near_sensitive: bool = False,
                        is_danger: bool = False, estimated_size: str | None = None,
                        source: HazardSource = HazardSource.AI,
+                       tilt_degrees: float | None = None, baseline_deg: float | None = None,
+                       base_visible: bool | None = None, cables_condition: str | None = None,
+                       tilt_axis: str | None = None, severity_override: HazardSeverity | None = None,
                        captured_at: datetime | None = None) -> tuple[HazardObservation, Hazard | None]:
     """Turn one detection into a stored observation and fold it into a Hazard.
 
@@ -112,10 +115,11 @@ def ingest_observation(db: Session, *, category_key: str, confidence: float,
     if vehicle_lat is not None and vehicle_lng is not None:
         lat, lng, acc = estimate_position(vehicle_lat, vehicle_lng, heading_deg, camera)
 
-    severity = compute_severity(
+    is_leaning = category_key == "leaning_pole"
+    severity = severity_override or (compute_severity(
         cat, blocks_path=blocks_path, near_sensitive=near_sensitive,
         is_danger=is_danger, estimated_size=estimated_size,
-    ) if cat else HazardSeverity.MEDIUM
+    ) if cat else HazardSeverity.MEDIUM)
 
     obs = HazardObservation(
         category_key=category_key, subtype=subtype, confidence=confidence,
@@ -126,6 +130,8 @@ def ingest_observation(db: Session, *, category_key: str, confidence: float,
         video_segment_id=video_segment_id, camera_id=(camera.id if camera else None),
         detector_name=detector_name, detector_version=detector_version,
         image_quality=image_quality, quality_flags=quality_flags,
+        tilt_degrees=tilt_degrees, baseline_deg=baseline_deg, base_visible=base_visible,
+        cables_condition=cables_condition, tilt_axis=tilt_axis,
         captured_at=captured_at,
     )
     db.add(obs)
@@ -141,9 +147,14 @@ def ingest_observation(db: Session, *, category_key: str, confidence: float,
     hz = find_duplicate(db, category_key, lat, lng, radius)
 
     if hz is None:
-        # new hazard. auto_open only when the category allows it AND confidence is high.
-        auto = (cat.auto_open_allowed if cat else True) and band == "high"
-        status = HazardStatus.OPEN if auto else HazardStatus.PENDING_REVIEW
+        # Leaning poles are never auto-declared a hazard from one frame — they
+        # start SUSPECTED and require field inspection. Others auto-open only
+        # when the category allows it AND confidence is high.
+        if is_leaning:
+            status = HazardStatus.SUSPECTED
+        else:
+            auto = (cat.auto_open_allowed if cat else True) and band == "high"
+            status = HazardStatus.OPEN if auto else HazardStatus.PENDING_REVIEW
         hz = Hazard(
             category_key=category_key, subtype=subtype, status=status, severity=severity,
             confidence=confidence, latitude=lat, longitude=lng, location_accuracy_m=acc,
@@ -152,13 +163,17 @@ def ingest_observation(db: Session, *, category_key: str, confidence: float,
             assigned_department=(cat.department if cat else None),
             blocks_path=blocks_path, near_sensitive=near_sensitive, is_danger=is_danger,
             estimated_size=estimated_size, best_observation_id=obs.id,
+            tilt_degrees=tilt_degrees, base_visible=base_visible,
             detector_version=detector_version,
         )
         db.add(hz)
         db.flush()
         obs.hazard_id = hz.id
         obs.status = "approved" if status == HazardStatus.OPEN else "pending"
-        _log(db, hz, None, status.value, f"{source.value} detection, confidence {confidence:.2f}")
+        note = f"{source.value} detection, confidence {confidence:.2f}"
+        if is_leaning and tilt_degrees is not None:
+            note = f"suspected lean {tilt_degrees}° (base {'visible' if base_visible else 'not visible'})"
+        _log(db, hz, None, status.value, note)
         return obs, hz
 
     # duplicate -> add an observation to the existing hazard
@@ -176,6 +191,15 @@ def ingest_observation(db: Session, *, category_key: str, confidence: float,
     # severity can only rise from a repeat sighting
     if _SEV_ORDER.index(severity) > _SEV_ORDER.index(hz.severity):
         hz.severity = severity
+    # leaning pole: confirmed across frames/scans, and worsening tilt escalates
+    if is_leaning and tilt_degrees is not None:
+        if base_visible and not hz.base_visible:
+            hz.base_visible = True
+        if hz.tilt_degrees is not None and tilt_degrees > hz.tilt_degrees + 2.0:
+            hz.tilt_worsening = True
+            _log(db, hz, hz.status.value, hz.status.value,
+                 f"tilt worsening: {hz.tilt_degrees}° -> {tilt_degrees}°")
+        hz.tilt_degrees = max(hz.tilt_degrees or 0.0, tilt_degrees)
     # a hazard we thought was fixed showing up again -> reopen
     if hz.status == HazardStatus.LIKELY_FIXED:
         hz.status = HazardStatus.REOPENED

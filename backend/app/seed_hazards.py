@@ -44,6 +44,11 @@ CATS = [
     ("possible_business", "עסק אפשרי לפי שילוט", "عمل تجاري محتمل حسب اللافتة", "Possible business (by signage)", "business", "ocr",
      ["a shop storefront sign", "a business sign", "a store front"],
      0.35, False, HazardSeverity.LOW, 10.0, "רישוי עסקים", "store", "#db2777"),
+    # leaning poles/trees: detected as poles by the Asset Engine, tilt-judged by
+    # the Hazard Engine's tilt analyzer. Never auto-opens — always field-inspected.
+    ("leaning_pole", "עמוד או עץ נוטה", "عمود أو شجرة مائلة", "Leaning pole/tree", "infrastructure", "tilt",
+     ["a leaning utility pole", "a tilted electricity pole", "a leaning street light pole", "a tree leaning over the road"],
+     0.0, False, HazardSeverity.MEDIUM, 4.0, "חשמל ותחזוקה", "utility-pole", "#e11d48"),
 ]
 
 

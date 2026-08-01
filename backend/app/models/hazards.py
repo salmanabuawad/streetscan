@@ -17,6 +17,7 @@ from app.db.session import Base
 
 
 class HazardStatus(str, enum.Enum):
+    SUSPECTED = "suspected"             # detected but needs field inspection (e.g. leaning pole)
     PENDING_REVIEW = "pending_review"   # medium confidence — awaits staff approval
     OPEN = "open"                       # confirmed active hazard
     IN_PROGRESS = "in_progress"         # assigned / under treatment
@@ -59,6 +60,11 @@ class HazardCategory(Base):
     auto_open_allowed: Mapped[bool] = mapped_column(Boolean, default=True)
     default_severity: Mapped[HazardSeverity] = mapped_column(Enum(HazardSeverity), default=HazardSeverity.MEDIUM)
     dedup_radius_m: Mapped[float] = mapped_column(Float, default=5.0)
+    # tilt thresholds (deg) for leaning-pole categories: <monitor ok, monitor..suspect track,
+    # suspect..high suspected, >high high-priority. Per-subtype overrides live in app.tilt.
+    tilt_monitor_deg: Mapped[float] = mapped_column(Float, default=3.0)
+    tilt_suspect_deg: Mapped[float] = mapped_column(Float, default=5.0)
+    tilt_high_deg: Mapped[float] = mapped_column(Float, default=10.0)
     department: Mapped[str | None] = mapped_column(String(80), nullable=True)
     icon: Mapped[str | None] = mapped_column(String(40), nullable=True)
     color: Mapped[str | None] = mapped_column(String(20), nullable=True)
@@ -135,6 +141,10 @@ class Hazard(Base):
     blocks_path: Mapped[bool] = mapped_column(Boolean, default=False)
     near_sensitive: Mapped[bool] = mapped_column(Boolean, default=False)
     is_danger: Mapped[bool] = mapped_column(Boolean, default=False)       # electrical/fire/fall
+    # leaning-pole tracking: worst tilt seen, whether a base was ever visible, tilt trend
+    tilt_degrees: Mapped[float | None] = mapped_column(Float, nullable=True)
+    base_visible: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    tilt_worsening: Mapped[bool] = mapped_column(Boolean, default=False)
     best_observation_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     detector_version: Mapped[str | None] = mapped_column(String(60), nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -169,6 +179,12 @@ class HazardObservation(Base):
     heading_deg: Mapped[float | None] = mapped_column(Float, nullable=True)
     image_quality: Mapped[str | None] = mapped_column(String(20), nullable=True)   # ok|poor|unusable
     quality_flags: Mapped[str | None] = mapped_column(String(160), nullable=True)  # night,rain,glare,dirty_lens...
+    # leaning-pole tilt analysis (null for non-pole hazards)
+    tilt_degrees: Mapped[float | None] = mapped_column(Float, nullable=True)
+    baseline_deg: Mapped[float | None] = mapped_column(Float, nullable=True)   # scene "vertical" reference used
+    base_visible: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    cables_condition: Mapped[str | None] = mapped_column(String(40), nullable=True)  # ok|suspected_tension|low|slack
+    tilt_axis: Mapped[str | None] = mapped_column(String(60), nullable=True)   # "x1,y1,x2,y2" pole axis in image px
     detector_name: Mapped[str] = mapped_column(String(60), default="openvocab")
     detector_version: Mapped[str] = mapped_column(String(60), default="owlvit")
     status: Mapped[str] = mapped_column(String(20), default="pending")  # pending|approved|rejected|duplicate|training_only

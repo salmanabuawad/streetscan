@@ -147,13 +147,64 @@ def process_image_hazards(db, image: CapturedImage, engine) -> int:
     return made
 
 
+def scan_tilt_hazards(db, detected, frame, *, route_id, image_id, camera=None,
+                      vehicle_lat=None, vehicle_lng=None, heading_deg=None,
+                      captured_at=None, annotated_path=None) -> int:
+    """Hazard Detection Engine, tilt analyzer: for every pole/sign/tree the Asset
+    Engine found, judge whether it leans beyond its threshold and, if so, open a
+    SUSPECTED leaning-pole hazard (field inspection required). Never asserts a
+    pole is dangerous from one frame."""
+    from app import tilt as tiltmod
+    from app import hazard_service as hsvc
+    from app.models.hazards import HazardSeverity
+    made = 0
+    for a in detected:
+        subtype = tiltmod.POLE_SUBTYPES.get(a.proposed_category)
+        if not subtype:
+            continue
+        res = tiltmod.estimate_tilt(frame, a.box)
+        if not res:
+            continue
+        is_hz, sev = tiltmod.classify_tilt(subtype, res["tilt_degrees"])
+        if not is_hz:
+            continue
+        _obs, hz = hsvc.ingest_observation(
+            db, category_key=tiltmod.LEANING_KEY, subtype=subtype,
+            confidence=round(min(0.99, a.confidence * (0.6 + 0.4 * res["confidence_factor"])), 3),
+            vehicle_lat=vehicle_lat, vehicle_lng=vehicle_lng, heading_deg=heading_deg,
+            camera=camera, bbox=",".join(str(round(x, 1)) for x in a.box),
+            crop_path=a.crop_path, annotated_path=annotated_path,
+            route_id=route_id, image_id=image_id,
+            detector_name="tilt", detector_version="hough-v1",
+            tilt_degrees=res["tilt_degrees"], baseline_deg=res["baseline_deg"],
+            base_visible=res["base_visible"], cables_condition=res["cables_condition"],
+            tilt_axis=",".join(str(v) for v in res["axis"]),
+            severity_override=(HazardSeverity(sev) if sev else None),
+            captured_at=captured_at,
+        )
+        if hz:
+            made += 1
+    return made
+
+
 def process_image_engine(db, image: CapturedImage, engine) -> int:
     ctx = CaptureContext(
         image_id=image.id, route_id=image.route_id, capture_type=image.kind,
         latitude=image.latitude, longitude=image.longitude, heading_deg=image.heading_deg,
         quality_score=image.blur_score, source="image",
     )
-    result = engine.analyze_image(image.filename, ctx)
+    frame = cv2.imread(image.filename)
+    result = engine.analyze_image(image.filename, ctx, frame=frame)
+    if frame is not None and result.assets:
+        try:
+            n = scan_tilt_hazards(db, result.assets, frame, route_id=image.route_id,
+                                  image_id=image.id, vehicle_lat=image.latitude,
+                                  vehicle_lng=image.longitude, heading_deg=image.heading_deg,
+                                  captured_at=image.captured_at, annotated_path=result.annotated_path)
+            if n:
+                log.info("image %s -> %d leaning-pole hazards", image.id, n)
+        except Exception:
+            log.exception("tilt analysis on image %s failed; skipping", image.id)
     for a in result.assets:
         db.add(CandidateAsset(
             image_id=image.id, route_id=image.route_id, image_sequence=image.id,

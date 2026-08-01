@@ -261,13 +261,20 @@ def process_segment_hazards(db, segment: VideoSegment, hz_engine, asset_engine) 
     return made
 
 
+# A moving camera scatters one object's estimated position; dedup by tight space
+# OR, within a scan, by temporal proximity under a looser spatial cap (same
+# object driven past). Mirrors the hazard dedup.
+CHAIN_WINDOW_S = 12.0
+CHAIN_SPATIAL_M = 25.0
+
+
 def upsert_candidate(db, frame, a, *, route_id, image_id, image_sequence, capture_type,
-                     lat, lng, annotated_path, processing_ms) -> int:
+                     lat, lng, annotated_path, processing_ms, captured_at=None) -> int:
     """Create a candidate asset — OR, if this is the same physical object already
-    seen in this scan (same category within SAME_ASSET_M, not yet reviewed), keep
-    whichever detection has the better image. A moving camera sees each pole/bin
-    in many frames; this collapses them to one record holding the best shot.
-    Returns 1 when a new candidate was created, 0 when it merged into an existing."""
+    seen in this scan, keep whichever detection has the better image. A moving
+    camera sees each pole/bin in many frames from scattered positions; this
+    collapses them to one record holding the best shot (tight-spatial OR
+    same-scan temporal match). Returns 1 for a new candidate, 0 when merged."""
     from app.imaging import image_quality_score
     score = image_quality_score(frame, a.box)
     bbox = ",".join(str(round(x, 1)) for x in a.box)
@@ -280,11 +287,17 @@ def upsert_candidate(db, frame, a, *, route_id, image_id, image_sequence, captur
             CandidateAsset.latitude.is_not(None),
         )).all()
         for c in existing:
-            if meters_between(here, (c.latitude, c.longitude)) < SAME_ASSET_M:
-                if score > (c.image_score or 0.0):     # this frame is a better view — adopt it
+            d = meters_between(here, (c.latitude, c.longitude))
+            same = d < SAME_ASSET_M
+            if not same and captured_at is not None and c.frame_captured_at is not None:
+                same = (d < CHAIN_SPATIAL_M
+                        and abs((captured_at - c.frame_captured_at).total_seconds()) <= CHAIN_WINDOW_S)
+            if same:
+                if score > (c.image_score or 0.0):     # better view — adopt it
                     c.crop_path, c.annotated_path, c.bbox = a.crop_path, annotated_path, bbox
                     c.image_id, c.image_score = image_id, score
                     c.latitude, c.longitude = lat, lng
+                    c.frame_captured_at = captured_at or c.frame_captured_at
                 if a.confidence > c.confidence:
                     c.confidence = a.confidence
                     c.confidence_band = _band(a.confidence, a.detector_name)
@@ -295,7 +308,7 @@ def upsert_candidate(db, frame, a, *, route_id, image_id, image_sequence, captur
         infrastructure_layer=a.infrastructure_layer, confidence=a.confidence,
         bbox=bbox, crop_path=a.crop_path, annotated_path=annotated_path,
         ocr_text=a.ocr_text, ocr_language=a.ocr_language, ocr_confidence=a.ocr_confidence,
-        condition=a.condition, defect=a.defect, image_score=score,
+        condition=a.condition, defect=a.defect, image_score=score, frame_captured_at=captured_at,
         detector_name=a.detector_name, detector_version=a.detector_version,
         latitude=lat, longitude=lng,
         confidence_band=_band(a.confidence, a.detector_name), processing_ms=processing_ms,
@@ -327,7 +340,8 @@ def process_image_engine(db, image: CapturedImage, engine) -> int:
         made += upsert_candidate(db, frame, a, route_id=image.route_id, image_id=image.id,
                                  image_sequence=image.id, capture_type=image.kind,
                                  lat=image.latitude, lng=image.longitude,
-                                 annotated_path=result.annotated_path, processing_ms=result.processing_ms)
+                                 annotated_path=result.annotated_path, processing_ms=result.processing_ms,
+                                 captured_at=image.captured_at)
     return made
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -763,7 +777,8 @@ def _engine_frame(db, segment: VideoSegment, frame, point: GPSPoint,
                                     image_sequence=None, capture_type="video",
                                     lat=point.latitude, lng=point.longitude,
                                     annotated_path=result.annotated_path,
-                                    processing_ms=result.processing_ms)
+                                    processing_ms=result.processing_ms,
+                                    captured_at=to_naive_utc(point.captured_at))
     return created
 
 

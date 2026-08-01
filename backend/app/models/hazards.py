@@ -120,6 +120,7 @@ class Hazard(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     category_key: Mapped[str] = mapped_column(String(60))
     subtype: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    route_id: Mapped[int | None] = mapped_column(Integer, nullable=True)   # scan the hazard belongs to
     status: Mapped[HazardStatus] = mapped_column(Enum(HazardStatus), default=HazardStatus.PENDING_REVIEW)
     severity: Mapped[HazardSeverity] = mapped_column(Enum(HazardSeverity), default=HazardSeverity.MEDIUM)
     confidence: Mapped[float] = mapped_column(Float, default=0.0)

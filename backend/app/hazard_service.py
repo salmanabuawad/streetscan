@@ -69,10 +69,21 @@ def _log(db: Session, hz: Hazard, old: str | None, new: str, note: str, user_id=
                                note=note, user_id=user_id))
 
 
+# A moving camera projects one object to scattered positions as the truck
+# approaches it, so pure spatial dedup fails. Detections of the same category on
+# the same scan that are close in TIME are the same object being driven past —
+# merge them even when their estimated positions differ by up to CHAIN_SPATIAL_M.
+CHAIN_WINDOW_S = 12.0
+CHAIN_SPATIAL_M = 25.0
+
+
 def find_duplicate(db: Session, category_key: str, lat: float, lng: float,
-                   radius_m: float) -> Hazard | None:
-    """Nearest live hazard of the same category within the dedup radius. Small
-    result set at village scale, so a Python scan is fine (no PostGIS needed)."""
+                   radius_m: float, route_id: int | None = None,
+                   captured_at: datetime | None = None) -> Hazard | None:
+    """Nearest live hazard of the same category to merge into. Matches either by
+    tight spatial proximity (radius_m) OR — for the same scan — by temporal
+    proximity within a looser spatial cap, which defeats moving-camera position
+    scatter. Village-scale, so a Python scan is fine (no PostGIS needed)."""
     rows = db.scalars(select(Hazard).where(
         Hazard.category_key == category_key,
         Hazard.status.in_(_LIVE),
@@ -81,8 +92,14 @@ def find_duplicate(db: Session, category_key: str, lat: float, lng: float,
     best, best_d = None, radius_m
     for h in rows:
         d = meters_between((lat, lng), (h.latitude, h.longitude))
-        if d < best_d:
+        if d < best_d:                       # tight spatial match
             best, best_d = h, d
+        elif (route_id is not None and h.route_id == route_id and captured_at is not None
+              and h.last_detected_at is not None and d < CHAIN_SPATIAL_M
+              and abs((captured_at - h.last_detected_at).total_seconds()) <= CHAIN_WINDOW_S):
+            # same object seen moments earlier on this pass, at a scattered position
+            if best is None or d < best_d:
+                best, best_d = h, d
     return best
 
 
@@ -145,7 +162,7 @@ def ingest_observation(db: Session, *, category_key: str, confidence: float,
 
     now = captured_at or datetime.utcnow()
     radius = cat.dedup_radius_m if cat else 5.0
-    hz = find_duplicate(db, category_key, lat, lng, radius)
+    hz = find_duplicate(db, category_key, lat, lng, radius, route_id=route_id, captured_at=now)
 
     if hz is None:
         # Leaning poles are never auto-declared a hazard from one frame — they
@@ -157,7 +174,8 @@ def ingest_observation(db: Session, *, category_key: str, confidence: float,
             auto = (cat.auto_open_allowed if cat else True) and band == "high"
             status = HazardStatus.OPEN if auto else HazardStatus.PENDING_REVIEW
         hz = Hazard(
-            category_key=category_key, subtype=subtype, status=status, severity=severity,
+            category_key=category_key, subtype=subtype, route_id=route_id,
+            status=status, severity=severity,
             confidence=confidence, latitude=lat, longitude=lng, location_accuracy_m=acc,
             first_detected_at=now, last_detected_at=now, observation_count=1,
             distinct_scan_days=1, source=source,

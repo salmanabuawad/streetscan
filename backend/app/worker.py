@@ -79,6 +79,74 @@ def build_engine(db):
     )
 
 
+def build_hazard_engine(db, detector):
+    """Hazard OWL-ViT engine sharing the SAME loaded detector as the asset
+    OWL-ViT engine (one ~1GB model in memory, two prompt sets)."""
+    from app.models.hazards import HazardCategory
+    cats = db.scalars(select(HazardCategory).where(
+        HazardCategory.active, HazardCategory.active_detector == "openvocab")).all()
+    prompts = [CategoryPrompt(
+        name=c.key, infrastructure_layer=c.group,
+        prompts=c.detection_prompts.split("\n"), min_confidence=c.min_confidence,
+        active_detector="openvocab", requires_validation=True,
+    ) for c in cats]
+    return DefaultAssetAnalysisEngine(
+        detector=detector, categories=prompts, ocr=None,
+        crops_dir=str(Path(settings.upload_dir) / "hazard_crops"),
+        annotated_dir=str(Path(settings.upload_dir) / "hazard_annotated"),
+    )
+
+
+def assess_image_quality(frame) -> tuple[str, str | None]:
+    """Cheap gate for unusable footage (night / heavy blur / glare). Returns
+    (quality, flags). A poor/unusable frame never auto-opens a hazard."""
+    import numpy as np
+    g = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    bright = float(g.mean())
+    blur = cv2.Laplacian(g, cv2.CV_64F).var()
+    over = float((g > 245).mean())        # blown-out fraction (sun glare / headlights)
+    flags = []
+    if bright < 40:
+        flags.append("dark")
+    if blur < 40:
+        flags.append("blurry")
+    if over > 0.25:
+        flags.append("glare")
+    quality = "unusable" if (bright < 25 or blur < 20) else ("poor" if flags else "ok")
+    return quality, (",".join(flags) or None)
+
+
+def process_image_hazards(db, image: CapturedImage, engine) -> int:
+    """OWL-ViT hazard scan of one still -> HazardObservations via the lifecycle
+    service (dedup, severity, position estimate). Quality-gated."""
+    from app import hazard_service as hsvc
+    frame = cv2.imread(image.filename)
+    if frame is None:
+        return 0
+    quality, flags = assess_image_quality(frame)
+    ctx = CaptureContext(
+        image_id=image.id, route_id=image.route_id, capture_type=image.kind,
+        latitude=image.latitude, longitude=image.longitude, heading_deg=image.heading_deg,
+        quality_score=image.blur_score, source="image",
+    )
+    result = engine.analyze_image(image.filename, ctx, frame=frame)
+    made = 0
+    for a in result.assets:
+        _obs, hz = hsvc.ingest_observation(
+            db, category_key=a.proposed_category, confidence=a.confidence,
+            vehicle_lat=image.latitude, vehicle_lng=image.longitude,
+            heading_deg=image.heading_deg, bbox=",".join(str(round(x, 1)) for x in a.box),
+            crop_path=a.crop_path, annotated_path=result.annotated_path,
+            route_id=image.route_id, image_id=image.id,
+            detector_name="openvocab", detector_version="owlvit",
+            image_quality=quality, quality_flags=flags,
+            captured_at=image.captured_at,
+        )
+        if hz:
+            made += 1
+    return made
+
+
 def process_image_engine(db, image: CapturedImage, engine) -> int:
     ctx = CaptureContext(
         image_id=image.id, route_id=image.route_id, capture_type=image.kind,
@@ -311,16 +379,55 @@ def run_once() -> int:
                     job.status = "done"
                     job.finished_at = datetime.utcnow()
             db.commit()
-        elif _OVENGINE[0] is not None:
+
+        # Hazard OWL-ViT scan — flagged per-image by /hazards/scan. Shares the
+        # already-loaded OWL-ViT model (one model, two prompt sets), or loads it
+        # if only hazard work is pending.
+        hz_pending = db.scalars(select(CapturedImage).where(
+            CapturedImage.hazard_pending.is_(True)).order_by(CapturedImage.id).limit(4)).all()
+        if hz_pending:
+            detector = _OVENGINE[0].detector if _OVENGINE[0] is not None else None
+            if detector is None:
+                try:
+                    _OVENGINE[0] = build_openvocab_engine(db)
+                    detector = _OVENGINE[0].detector
+                except Exception:
+                    log.exception("failed loading OWL-ViT for hazard scan")
+                    for im in hz_pending:
+                        im.hazard_pending, im.hazard_processed = False, True
+                    db.commit()
+                    detector = None
+            if detector is not None:
+                if _HZENGINE[0] is None:
+                    _HZENGINE[0] = build_hazard_engine(db, detector)
+                for im in hz_pending:
+                    try:
+                        n = process_image_hazards(db, im, _HZENGINE[0])
+                        if n:
+                            log.info("image %s -> %d hazards (owlvit)", im.id, n)
+                            total += n
+                    except Exception:
+                        log.exception("hazard scan on image %s failed; skipping", im.id)
+                    im.hazard_pending, im.hazard_processed = False, True
+                    db.commit()
+
+        # Unload OWL-ViT once BOTH its queues (assets + hazards) are drained.
+        ov_left = db.scalar(select(func.count()).select_from(CapturedImage).where(
+            CapturedImage.openvocab_processed.is_(False))) or 0
+        hz_left = db.scalar(select(func.count()).select_from(CapturedImage).where(
+            CapturedImage.hazard_pending.is_(True))) or 0
+        if _OVENGINE[0] is not None and ov_left == 0 and hz_left == 0:
             import gc
             _OVENGINE[0] = None
+            _HZENGINE[0] = None
             gc.collect()
-            log.info("OWL-ViT queue drained; model unloaded (memory freed)")
+            log.info("OWL-ViT queues drained; model unloaded (memory freed)")
     return total
 
 
 _ENGINE: list = [None]     # lazily-built YOLO engine (continuous)
 _OVENGINE: list = [None]   # lazily-built OWL-ViT engine (on-demand, unloaded when idle)
+_HZENGINE: list = [None]   # hazard OWL-ViT engine (shares _OVENGINE's detector)
 
 
 def blur_variance(frame) -> float:

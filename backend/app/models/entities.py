@@ -99,6 +99,8 @@ class CapturedImage(Base):
     ocr_processed: Mapped[bool] = mapped_column(Boolean, default=False)   # Tesseract businesses
     engine_processed: Mapped[bool] = mapped_column(Boolean, default=False)    # YOLO engine (continuous)
     openvocab_processed: Mapped[bool] = mapped_column(Boolean, default=True)  # OWL-ViT (on-demand button)
+    hazard_pending: Mapped[bool] = mapped_column(Boolean, default=False)      # queued for OWL-ViT hazard scan
+    hazard_processed: Mapped[bool] = mapped_column(Boolean, default=False)    # hazard scan done
 
 class AssetCategory(Base):
     """Config-driven category — NOT hard-coded in detection logic. Editable by

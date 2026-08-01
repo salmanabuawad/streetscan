@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.api.deps import require_role, get_current_user
+from app.models.entities import CapturedImage, Route
 from app import hazard_service as svc
 from app.models.hazards import (
     Hazard, HazardObservation, HazardCategory, HazardStatus, HazardSeverity,
@@ -337,6 +338,24 @@ def merge(hazard_id: int, body: dict = Body(...), user=Depends(get_current_user)
     _audit(db, user, "update", "hazard", h.id, f"merge->{target.id}")
     db.commit()
     return {"ok": True, "into_id": target.id}
+
+
+# ---------- AI scan trigger ----------
+@router.post("/scan", dependencies=[VALIDATOR])
+def scan_route(body: dict = Body(default={}), user=Depends(get_current_user), db: Session = Depends(get_db)):
+    """Queue a route's captured images for an OWL-ViT hazard scan (or all
+    located images if no route given). The worker picks them up on-demand,
+    loading the model only while there's work."""
+    route_id = body.get("route_id")
+    stmt = select(CapturedImage).where(CapturedImage.latitude.is_not(None))
+    if route_id:
+        stmt = stmt.where(CapturedImage.route_id == route_id)
+    imgs = db.scalars(stmt).all()
+    for im in imgs:
+        im.hazard_pending, im.hazard_processed = True, False
+    _audit(db, user, "update", "hazard", None, f"queued {len(imgs)} images for hazard scan")
+    db.commit()
+    return {"ok": True, "queued": len(imgs)}
 
 
 # ---------- manual / resident / hotline intake ----------

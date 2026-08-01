@@ -8,7 +8,7 @@ import { AuthImg } from './AuthMedia';
 const SEV_COLOR: Record<string,string> = { low:'#64748b', medium:'#f59e0b', high:'#f97316', critical:'#dc2626' };
 const SEV_HE: Record<string,string> = { low:'נמוכה', medium:'בינונית', high:'גבוהה', critical:'קריטית' };
 const STATUS_HE: Record<string,string> = {
-  pending_review:'ממתין לבדיקה', open:'פתוח', in_progress:'בטיפול',
+  suspected:'חשד — בדיקת שטח', pending_review:'ממתין לבדיקה', open:'פתוח', in_progress:'בטיפול',
   likely_fixed:'כנראה תוקן', closed:'סגור', reopened:'נפתח מחדש', rejected:'נדחה',
 };
 const SOURCE_HE: Record<string,string> = { ai:'AI', staff:'עובד', resident:'תושב', hotline:'מוקד' };
@@ -223,7 +223,7 @@ function HazardMap({catBy}:{catBy:Record<string,Cat>}) {
       <div className="hz-filter-group"><b>חומרה:</b>{['critical','high','medium','low'].map(s=>(
         <label key={s} className="hz-chip"><input type="checkbox" checked={!fSev.has(s)} onChange={()=>toggle(fSev,setFSev,s)}/>
           <i style={{background:SEV_COLOR[s]}}/>{SEV_HE[s]} <em>{sevCounts[s]||0}</em></label>))}</div>
-      <div className="hz-filter-group"><b>סטטוס:</b>{['open','in_progress','pending_review','reopened','likely_fixed','closed'].map(s=>(
+      <div className="hz-filter-group"><b>סטטוס:</b>{['suspected','open','in_progress','pending_review','reopened','likely_fixed','closed'].map(s=>(
         <label key={s} className="hz-chip"><input type="checkbox" checked={!fStatus.has(s)} onChange={()=>toggle(fStatus,setFStatus,s)}/>{STATUS_HE[s]}</label>))}</div>
     </div>
     <div ref={el} className="hz-map"/>

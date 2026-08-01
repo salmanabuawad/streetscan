@@ -280,9 +280,14 @@ def hazard_detail(hazard_id: int, user=Depends(get_current_user), db: Session = 
         "base_visible": o.base_visible, "cables_condition": o.cables_condition,
         "bbox": o.bbox, "tilt_axis": o.tilt_axis,
     } for o in obs]
+    # resolve actor names for the audit trail
+    from app.models.entities import User
+    uids = {s.user_id for s in hist if s.user_id}
+    names = {u.id: u.display_name for u in db.scalars(select(User).where(User.id.in_(uids or {0}))).all()}
     d["history"] = [{
         "old": s.old_status, "new": s.new_status, "note": s.note,
         "at": s.created_at.isoformat(), "user_id": s.user_id,
+        "by": names.get(s.user_id, "מערכת/AI" if s.user_id is None else f"#{s.user_id}"),
     } for s in hist]
     return d
 
@@ -320,13 +325,19 @@ def assign(hazard_id: int, body: dict = Body(...), user=Depends(get_current_user
     dept = body.get("department")
     if not dept:
         raise HTTPException(400, "department required")
+    prev_dept = h.assigned_department
     h.assigned_department = dept
     h.assigned_user_id = body.get("assigned_user_id")
-    if h.status in (HazardStatus.OPEN, HazardStatus.PENDING_REVIEW, HazardStatus.REOPENED):
+    if h.status in (HazardStatus.OPEN, HazardStatus.PENDING_REVIEW, HazardStatus.REOPENED, HazardStatus.SUSPECTED):
         old = h.status.value
         h.status = HazardStatus.IN_PROGRESS
         db.add(HazardStatusHistory(hazard_id=h.id, old_status=old, new_status="in_progress",
-                                   note=f"assigned to {dept}", user_id=user.id))
+                                   note=f"הוקצה ל{dept}", user_id=user.id))
+    else:
+        # reassignment without a status change — still record it on the timeline
+        db.add(HazardStatusHistory(hazard_id=h.id, old_status=h.status.value, new_status=h.status.value,
+                                   note=(f"הועבר מ{prev_dept} ל{dept}" if prev_dept else f"הוקצה ל{dept}"),
+                                   user_id=user.id))
     db.add(HazardAssignment(hazard_id=h.id, department=dept,
                             assigned_user_id=body.get("assigned_user_id"), assigned_by=user.id,
                             note=body.get("note")))

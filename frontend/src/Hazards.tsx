@@ -291,7 +291,8 @@ function HazardModal({h, catBy, onClose, onChanged}:{h:Hazard; catBy:Record<stri
         <tr><th>מקור</th><td>{SOURCE_HE[h.source]||h.source}</td></tr>
         <tr><th>ביטחון</th><td>{Math.round(h.confidence*100)}%</td></tr>
         <tr><th>זוהה</th><td>{h.observation_count} פעמים · {h.distinct_scan_days} ימי סריקה</td></tr>
-        <tr><th>גיל</th><td>{h.age_days} ימים (מאז {new Date(h.first_detected_at).toLocaleDateString('he-IL')})</td></tr>
+        <tr><th>זוהה לראשונה</th><td>{new Date(h.first_detected_at).toLocaleString('he-IL')}</td></tr>
+        <tr><th>זוהה לאחרונה</th><td>{new Date(h.last_detected_at).toLocaleString('he-IL')}</td></tr>
         <tr><th>מיקום</th><td>{h.lat?.toFixed(6)}, {h.lng?.toFixed(6)} <em>±{Math.round(h.location_accuracy_m||0)}מ׳</em></td></tr>
       </tbody></table>
       <div className="hz-modal-actions">
@@ -300,10 +301,18 @@ function HazardModal({h, catBy, onClose, onChanged}:{h:Hazard; catBy:Record<stri
         {h.status!=='closed' && <button disabled={busy} className="hz-approve" onClick={()=>doAct('status',{status:'closed',force:true})}>סגור מפגע</button>}
         {h.status==='closed' && <button disabled={busy} onClick={()=>doAct('status',{status:'reopened'})}>פתח מחדש</button>}
       </div>
-      {detail?.history?.length>0 && <div className="hz-history"><h4>היסטוריה</h4>
+      {detail?.history?.length>0 && <div className="hz-history"><h4>יומן מעקב</h4>
         {detail.history.map((s:any,i:number)=><div key={i} className="hz-hist-row">
-          <span>{STATUS_HE[s.new]||s.new}</span><span className="hz-hist-note">{s.note}</span>
-          <span className="hz-hist-at">{new Date(s.at).toLocaleDateString('he-IL')}</span></div>)}</div>}
+          <span className="hz-hist-dot"/>
+          <div className="hz-hist-body">
+            <div className="hz-hist-line">
+              {s.old && s.old!==s.new && <span className="hz-hist-from">{STATUS_HE[s.old]||s.old} →</span>}
+              <b>{STATUS_HE[s.new]||s.new}</b>
+              {s.note && <span className="hz-hist-note">{s.note}</span>}
+            </div>
+            <div className="hz-hist-sub">{new Date(s.at).toLocaleString('he-IL')} · {s.by}</div>
+          </div>
+        </div>)}</div>}
     </div>
   </div>;
 }

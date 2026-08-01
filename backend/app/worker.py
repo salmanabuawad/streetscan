@@ -149,7 +149,7 @@ def process_image_hazards(db, image: CapturedImage, engine) -> int:
 
 def scan_tilt_hazards(db, detected, frame, *, route_id, image_id, camera=None,
                       vehicle_lat=None, vehicle_lng=None, heading_deg=None,
-                      captured_at=None, annotated_path=None) -> int:
+                      captured_at=None, annotated_path=None, video_segment_id=None) -> int:
     """Hazard Detection Engine, tilt analyzer: for every pole/sign/tree the Asset
     Engine found, judge whether it leans beyond its threshold and, if so, open a
     SUSPECTED leaning-pole hazard (field inspection required). Never asserts a
@@ -174,7 +174,7 @@ def scan_tilt_hazards(db, detected, frame, *, route_id, image_id, camera=None,
             vehicle_lat=vehicle_lat, vehicle_lng=vehicle_lng, heading_deg=heading_deg,
             camera=camera, bbox=",".join(str(round(x, 1)) for x in a.box),
             crop_path=a.crop_path, annotated_path=annotated_path,
-            route_id=route_id, image_id=image_id,
+            route_id=route_id, image_id=image_id, video_segment_id=video_segment_id,
             detector_name="tilt", detector_version="hough-v1",
             tilt_degrees=res["tilt_degrees"], baseline_deg=res["baseline_deg"],
             base_visible=res["base_visible"], cables_condition=res["cables_condition"],
@@ -184,6 +184,74 @@ def scan_tilt_hazards(db, detected, frame, *, route_id, image_id, camera=None,
         )
         if hz:
             made += 1
+    return made
+
+
+def process_segment_hazards(db, segment: VideoSegment, hz_engine, asset_engine) -> int:
+    """Hazard scan of a video clip: sample frames, geolocate each from the GPS
+    track, run BOTH engines — the Asset Engine (poles -> tilt analyzer) and the
+    OWL-ViT Hazard Engine (potholes, garbage, bins, signs...) — and fold results
+    into hazards. Quality-gated; frames without a GPS fix are skipped."""
+    from app import hazard_service as hsvc
+    cap, rotate_code = open_capture(segment.filename)
+    if not cap.isOpened():
+        return 0
+    if rotate_code is None and segment.orientation_hint:
+        rotate_code = HINT_ROTATE.get(segment.orientation_hint)
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    if fps <= 0:
+        fps = 30.0
+    duration = clip_duration_s(cap, fps)
+    start_time = to_naive_utc(segment.captured_at) - timedelta(seconds=duration)
+    gps_points = db.scalars(select(GPSPoint).where(GPSPoint.route_id == segment.route_id)).all()
+    if not gps_points:
+        cap.release()
+        return 0
+    stride = max(1, int(round(fps * ENGINE_FRAME_STRIDE_S)))
+    made = 0
+    idx = 0
+    while True:
+        if not cap.grab():
+            break
+        if idx % stride == 0:
+            ok, frame = cap.retrieve()
+            if ok and frame is not None:
+                if rotate_code is not None:
+                    frame = cv2.rotate(frame, rotate_code)
+                frame_time = start_time + timedelta(seconds=idx / fps)
+                point = nearest_gps(gps_points, frame_time)
+                if point is not None:
+                    quality, flags = assess_image_quality(frame)
+                    ctx = CaptureContext(
+                        image_id=None, route_id=segment.route_id, capture_type="video",
+                        latitude=point.latitude, longitude=point.longitude,
+                        heading_deg=point.heading_deg, quality_score=None, source="video",
+                    )
+                    # Asset Engine -> pole detections -> tilt analyzer
+                    ares = asset_engine.analyze_image("", ctx, frame=frame)
+                    if ares.assets:
+                        made += scan_tilt_hazards(
+                            db, ares.assets, frame, route_id=segment.route_id, image_id=None,
+                            video_segment_id=segment.id, vehicle_lat=point.latitude,
+                            vehicle_lng=point.longitude, heading_deg=point.heading_deg,
+                            captured_at=frame_time, annotated_path=ares.annotated_path)
+                    # Hazard Engine (OWL-ViT open-vocab)
+                    hres = hz_engine.analyze_image("", ctx, frame=frame)
+                    for a in hres.assets:
+                        _o, hz = hsvc.ingest_observation(
+                            db, category_key=a.proposed_category, confidence=a.confidence,
+                            vehicle_lat=point.latitude, vehicle_lng=point.longitude,
+                            heading_deg=point.heading_deg,
+                            bbox=",".join(str(round(x, 1)) for x in a.box),
+                            crop_path=a.crop_path, annotated_path=hres.annotated_path,
+                            route_id=segment.route_id, image_id=None, video_segment_id=segment.id,
+                            detector_name="openvocab", detector_version="owlvit",
+                            image_quality=quality, quality_flags=flags, captured_at=frame_time)
+                        if hz:
+                            made += 1
+                    db.commit()
+        idx += 1
+    cap.release()
     return made
 
 
@@ -462,12 +530,46 @@ def run_once() -> int:
                     im.hazard_pending, im.hazard_processed = False, True
                     db.commit()
 
-        # Unload OWL-ViT once BOTH its queues (assets + hazards) are drained.
+        # Hazard scan of uploaded VIDEO — flagged per-segment by /hazards/scan.
+        # One clip per cycle (both engines run per sampled frame), sharing the
+        # loaded OWL-ViT model and the continuous asset (YOLO) engine.
+        hz_seg = db.scalars(select(VideoSegment).where(
+            VideoSegment.hazard_pending.is_(True)).order_by(VideoSegment.id).limit(1)).all()
+        if hz_seg:
+            detector = _OVENGINE[0].detector if _OVENGINE[0] is not None else None
+            if detector is None:
+                try:
+                    _OVENGINE[0] = build_openvocab_engine(db)
+                    detector = _OVENGINE[0].detector
+                except Exception:
+                    log.exception("failed loading OWL-ViT for video hazard scan")
+                    for seg in hz_seg:
+                        seg.hazard_pending, seg.hazard_processed = False, True
+                    db.commit()
+                    detector = None
+            if detector is not None:
+                if _HZENGINE[0] is None:
+                    _HZENGINE[0] = build_hazard_engine(db, detector)
+                if _ENGINE[0] is None:
+                    _ENGINE[0] = build_engine(db)
+                for seg in hz_seg:
+                    try:
+                        n = process_segment_hazards(db, seg, _HZENGINE[0], _ENGINE[0])
+                        log.info("segment %s -> %d hazards (video scan)", seg.id, n)
+                        total += n
+                    except Exception:
+                        log.exception("video hazard scan on segment %s failed; skipping", seg.id)
+                    seg.hazard_pending, seg.hazard_processed = False, True
+                    db.commit()
+
+        # Unload OWL-ViT once ALL its queues (assets + image/video hazards) drain.
         ov_left = db.scalar(select(func.count()).select_from(CapturedImage).where(
             CapturedImage.openvocab_processed.is_(False))) or 0
         hz_left = db.scalar(select(func.count()).select_from(CapturedImage).where(
             CapturedImage.hazard_pending.is_(True))) or 0
-        if _OVENGINE[0] is not None and ov_left == 0 and hz_left == 0:
+        hz_seg_left = db.scalar(select(func.count()).select_from(VideoSegment).where(
+            VideoSegment.hazard_pending.is_(True))) or 0
+        if _OVENGINE[0] is not None and ov_left == 0 and hz_left == 0 and hz_seg_left == 0:
             import gc
             _OVENGINE[0] = None
             _HZENGINE[0] = None

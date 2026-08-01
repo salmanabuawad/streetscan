@@ -74,6 +74,8 @@ class VideoSegment(Base):
     captured_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     processed: Mapped[bool] = mapped_column(Boolean, default=False)        # YOLO
     ocr_processed: Mapped[bool] = mapped_column(Boolean, default=False)    # Tesseract on frames
+    hazard_pending: Mapped[bool] = mapped_column(Boolean, default=False)   # queued for hazard scan
+    hazard_processed: Mapped[bool] = mapped_column(Boolean, default=False)
     # screen.orientation.angle at record time (0/90/180/270). Phone browsers
     # keep the camera buffer orientation fixed while the device rotates, so
     # the worker needs this hint to upright the frames before inference.

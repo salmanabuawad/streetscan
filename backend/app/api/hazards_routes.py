@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.api.deps import require_role, get_current_user
-from app.models.entities import CapturedImage, Route
+from app.models.entities import CapturedImage, Route, VideoSegment
 from app import hazard_service as svc
 from app.models.hazards import (
     Hazard, HazardObservation, HazardCategory, HazardStatus, HazardSeverity,
@@ -355,15 +355,25 @@ def scan_route(body: dict = Body(default={}), user=Depends(get_current_user), db
     located images if no route given). The worker picks them up on-demand,
     loading the model only while there's work."""
     route_id = body.get("route_id")
+    include_video = body.get("video", True)
     stmt = select(CapturedImage).where(CapturedImage.latitude.is_not(None))
     if route_id:
         stmt = stmt.where(CapturedImage.route_id == route_id)
     imgs = db.scalars(stmt).all()
     for im in imgs:
         im.hazard_pending, im.hazard_processed = True, False
-    _audit(db, user, "update", "hazard", None, f"queued {len(imgs)} images for hazard scan")
+    segs = []
+    if include_video:
+        sstmt = select(VideoSegment)
+        if route_id:
+            sstmt = sstmt.where(VideoSegment.route_id == route_id)
+        segs = db.scalars(sstmt).all()
+        for seg in segs:
+            seg.hazard_pending, seg.hazard_processed = True, False
+    _audit(db, user, "update", "hazard", None,
+           f"queued {len(imgs)} images + {len(segs)} video segments for hazard scan")
     db.commit()
-    return {"ok": True, "queued": len(imgs)}
+    return {"ok": True, "queued_images": len(imgs), "queued_segments": len(segs)}
 
 
 # ---------- manual / resident / hotline intake ----------

@@ -63,6 +63,9 @@ def _hazard_dict(h: Hazard, cats: dict) -> dict:
         "tilt_degrees": h.tilt_degrees, "base_visible": h.base_visible,
         "tilt_worsening": h.tilt_worsening,
         "duplicate_of": h.duplicate_of, "best_observation_id": h.best_observation_id,
+        # transparency: separated confidence + geometry evidence
+        "geometry_confidence": h.geometry_confidence, "final_confidence": h.final_confidence,
+        "valid_frame_count": h.valid_frame_count, "tilt_stddev_deg": h.tilt_stddev_deg,
     }
 
 
@@ -108,9 +111,17 @@ def review_queue(limit: int = 200, db: Session = Depends(get_db)):
             "detector": o.detector_name, "camera_id": o.camera_id, "subtype": o.subtype,
             "captured_at": o.captured_at.isoformat() if o.captured_at else None,
             "image_obs_id": disp.id, "has_image": bool(disp.annotated_path or disp.crop_path),
-            "tilt_degrees": disp.tilt_degrees, "baseline_deg": disp.baseline_deg,
+            "tilt_degrees": disp.tilt_degrees if disp.angle_is_valid else None,
+            "angle_is_valid": disp.angle_is_valid,
+            "baseline_deg": disp.baseline_deg,
             "base_visible": disp.base_visible, "cables_condition": disp.cables_condition,
-            "bbox": disp.bbox, "tilt_axis": disp.tilt_axis,
+            "bbox": disp.bbox, "tilt_axis": disp.tilt_axis if disp.angle_is_valid else None,
+            # evidence components (transparency)
+            "detector_confidence": disp.detector_confidence,
+            "validation_confidence": disp.validation_confidence,
+            "geometry_confidence": disp.geometry_confidence,
+            "final_confidence": disp.final_confidence,
+            "rejection_reasons": disp.rejection_reasons,
         })
     return {"count": len(out), "items": out}
 

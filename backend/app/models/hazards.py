@@ -143,7 +143,11 @@ class Hazard(Base):
     near_sensitive: Mapped[bool] = mapped_column(Boolean, default=False)
     is_danger: Mapped[bool] = mapped_column(Boolean, default=False)       # electrical/fire/fall
     # leaning-pole tracking: worst tilt seen, whether a base was ever visible, tilt trend
-    tilt_degrees: Mapped[float | None] = mapped_column(Float, nullable=True)
+    tilt_degrees: Mapped[float | None] = mapped_column(Float, nullable=True)  # median of valid frames
+    tilt_stddev_deg: Mapped[float | None] = mapped_column(Float, nullable=True)
+    valid_frame_count: Mapped[int] = mapped_column(Integer, default=0)
+    geometry_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    final_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     base_visible: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     tilt_worsening: Mapped[bool] = mapped_column(Boolean, default=False)
     best_observation_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -187,6 +191,18 @@ class HazardObservation(Base):
     cables_condition: Mapped[str | None] = mapped_column(String(40), nullable=True)  # ok|suspected_tension|low|slack
     tilt_axis: Mapped[str | None] = mapped_column(String(60), nullable=True)   # "x1,y1,x2,y2" pole axis in image px
     image_score: Mapped[float] = mapped_column(Float, default=0.0)   # best-shot rank within the hazard
+    # evidence components (ChatGPT review — one generic score is not enough)
+    detector_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    validation_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    geometry_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    temporal_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    final_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    angle_is_valid: Mapped[bool] = mapped_column(Boolean, default=False)
+    rejection_reasons: Mapped[str | None] = mapped_column(Text, nullable=True)
+    validation_version: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    track_id: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    base_occluded: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    occlusion_reason: Mapped[str | None] = mapped_column(String(80), nullable=True)
     detector_name: Mapped[str] = mapped_column(String(60), default="openvocab")
     detector_version: Mapped[str] = mapped_column(String(60), default="owlvit")
     status: Mapped[str] = mapped_column(String(20), default="pending")  # pending|approved|rejected|duplicate|training_only

@@ -122,6 +122,12 @@ def ingest_observation(db: Session, *, category_key: str, confidence: float,
                        base_visible: bool | None = None, cables_condition: str | None = None,
                        tilt_axis: str | None = None, severity_override: HazardSeverity | None = None,
                        image_score: float = 0.0,
+                       detector_confidence: float | None = None,
+                       validation_confidence: float | None = None,
+                       geometry_confidence: float | None = None,
+                       angle_is_valid: bool = False, rejection_reasons: str | None = None,
+                       validation_version: str | None = None,
+                       base_occluded: bool | None = None, occlusion_reason: str | None = None,
                        captured_at: datetime | None = None) -> tuple[HazardObservation, Hazard | None]:
     """Turn one detection into a stored observation and fold it into a Hazard.
 
@@ -159,6 +165,11 @@ def ingest_observation(db: Session, *, category_key: str, confidence: float,
         image_quality=image_quality, quality_flags=quality_flags,
         tilt_degrees=tilt_degrees, baseline_deg=baseline_deg, base_visible=base_visible,
         cables_condition=cables_condition, tilt_axis=tilt_axis, image_score=image_score,
+        detector_confidence=(detector_confidence if detector_confidence is not None else confidence),
+        validation_confidence=validation_confidence, geometry_confidence=geometry_confidence,
+        final_confidence=confidence, angle_is_valid=angle_is_valid,
+        rejection_reasons=rejection_reasons, validation_version=validation_version,
+        base_occluded=base_occluded, occlusion_reason=occlusion_reason,
         captured_at=captured_at,
     )
     db.add(obs)
@@ -198,6 +209,8 @@ def ingest_observation(db: Session, *, category_key: str, confidence: float,
             blocks_path=blocks_path, near_sensitive=near_sensitive, is_danger=is_danger,
             estimated_size=estimated_size, best_observation_id=obs.id,
             tilt_degrees=tilt_degrees, base_visible=base_visible,
+            geometry_confidence=geometry_confidence, final_confidence=confidence,
+            valid_frame_count=(1 if (is_leaning and tilt_degrees is not None) else 0),
             detector_version=detector_version,
         )
         db.add(hz)
@@ -245,6 +258,10 @@ def ingest_observation(db: Session, *, category_key: str, confidence: float,
         old_tilt = hz.tilt_degrees
         if values:
             hz.tilt_degrees = round(float(statistics.median(values)), 1)
+            hz.valid_frame_count = len(values)
+            hz.tilt_stddev_deg = round(float(statistics.pstdev(values)), 2) if len(values) > 1 else 0.0
+            if geometry_confidence is not None:
+                hz.geometry_confidence = max(hz.geometry_confidence or 0.0, geometry_confidence)
             if len(values) >= 5:
                 spread = statistics.pstdev(values)
                 if spread <= 2.0 and hz.status == HazardStatus.SUSPECTED:

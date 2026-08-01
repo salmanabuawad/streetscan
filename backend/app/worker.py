@@ -148,6 +148,9 @@ def process_image_hazards(db, image: CapturedImage, engine) -> int:
             image_quality=quality_for_ingest, quality_flags=merged_flags,
             blocks_path=validation.blocks_path, estimated_size=validation.estimated_size,
             image_score=image_quality_score(frame, a.box),
+            detector_confidence=a.confidence, validation_confidence=validation.confidence,
+            rejection_reasons=",".join(validation.reasons) or None,
+            validation_version="owlvit+scene-validation-v1",
             captured_at=image.captured_at,
         )
         if hz:
@@ -190,6 +193,11 @@ def scan_tilt_hazards(db, detected, frame, *, route_id, image_id, camera=None,
             tilt_axis=",".join(str(v) for v in res["axis"]),
             severity_override=(HazardSeverity(sev) if sev else None),
             image_score=image_quality_score(frame, a.box),
+            detector_confidence=a.confidence, geometry_confidence=res["geometry_confidence"],
+            angle_is_valid=res["angle_is_valid"],
+            rejection_reasons=",".join(res.get("rejection_reasons") or []) or None,
+            validation_version="parallel-edges-v2",
+            base_occluded=res.get("base_occluded"), occlusion_reason=res.get("occlusion_reason"),
             captured_at=captured_at,
         )
         if hz:
@@ -264,7 +272,10 @@ def process_segment_hazards(db, segment: VideoSegment, hz_engine, asset_engine) 
                             detector_name="openvocab", detector_version="owlvit+scene-validation-v1",
                             image_quality=quality_for_ingest, quality_flags=merged_flags,
                             blocks_path=validation.blocks_path, estimated_size=validation.estimated_size,
-                            image_score=image_quality_score(frame, a.box), captured_at=frame_time)
+                            image_score=image_quality_score(frame, a.box),
+                            detector_confidence=a.confidence, validation_confidence=validation.confidence,
+                            rejection_reasons=",".join(validation.reasons) or None,
+                            validation_version="owlvit+scene-validation-v1", captured_at=frame_time)
                         if hz:
                             made += 1
                     db.commit()

@@ -66,6 +66,8 @@ type Hazard = {
   estimated_size:string|null; blocks_path:boolean; near_sensitive:boolean; is_danger:boolean;
   best_observation_id:number|null;
   tilt_degrees?:number|null; base_visible?:boolean|null; tilt_worsening?:boolean;
+  geometry_confidence?:number|null; final_confidence?:number|null;
+  valid_frame_count?:number; tilt_stddev_deg?:number|null;
 };
 type ReviewItem = {
   id:number; hazard_id:number|null; category_key:string; category_he:string; color:string;
@@ -74,6 +76,8 @@ type ReviewItem = {
   detector:string; captured_at:string|null; has_image:boolean; subtype?:string|null; image_obs_id?:number;
   tilt_degrees?:number|null; baseline_deg?:number|null; base_visible?:boolean|null;
   cables_condition?:string|null; bbox?:string|null; tilt_axis?:string|null;
+  angle_is_valid?:boolean; detector_confidence?:number|null; validation_confidence?:number|null;
+  geometry_confidence?:number|null; final_confidence?:number|null; rejection_reasons?:string|null;
 };
 
 const BUQATA: [number,number] = [33.2007, 35.7772];
@@ -179,11 +183,13 @@ function Review({catBy}:{catBy:Record<string,Cat>}) {
             </select>
           </div>
           <div className="hz-card-meta">
-            {o.tilt_degrees!=null
-              ? <span className="hz-tilt-chip">נטייה {o.tilt_degrees}°{o.base_visible===false?' · בסיס לא נראה':''}</span>
-              : <span>ביטחון {Math.round(o.confidence*100)}%</span>}
-            <span className={`hz-band hz-band-${o.band}`}>{o.band}</span>
-            {o.quality_flags && <span className="hz-flag">⚠ {o.quality_flags}</span>}
+            {o.category_key==='leaning_pole' && (o.angle_is_valid && o.tilt_degrees!=null
+              ? <span className="hz-tilt-chip">נטייה {o.tilt_degrees}°{o.geometry_confidence!=null?` · גיאומטריה ${Math.round(o.geometry_confidence*100)}%`:''}</span>
+              : <span className="hz-noangle">לא ניתן למדוד נטייה אמינה</span>)}
+            <span title="ודאות המזהה">AI {Math.round((o.detector_confidence??o.confidence)*100)}%</span>
+            {o.validation_confidence!=null && <span title="ודאות אימות סצנה">✓ {Math.round(o.validation_confidence*100)}%</span>}
+            {o.base_visible===false && o.category_key==='leaning_pole' && <span className="hz-flag">בסיס לא מאומת</span>}
+            {o.quality_flags && <span className="hz-flag" title={o.rejection_reasons||''}>⚠</span>}
             {o.lat!=null && <span>±{Math.round(o.location_accuracy_m||0)}מ׳</span>}
           </div>
           <div className="hz-card-actions">
@@ -286,10 +292,12 @@ function HazardModal({h, catBy, onClose, onChanged}:{h:Hazard; catBy:Record<stri
         {h.near_sensitive && <span className="hz-badge">סמוך למוסד</span>}
       </div>
       <table className="hz-facts"><tbody>
-        {h.tilt_degrees!=null && <tr><th>זווית נטייה</th><td>{h.tilt_degrees}° {h.tilt_worsening && <span className="hz-worsen">מחמיר ↑</span>}</td></tr>}
-        {h.category_key==='leaning_pole' && <tr><th>בסיס העמוד</th><td>{h.base_visible?'נראה בתמונה':'לא נראה — דרושה בדיקת שטח'}</td></tr>}
+        {h.category_key==='leaning_pole' && (h.tilt_degrees!=null
+          ? <tr><th>זווית נטייה</th><td>{h.tilt_degrees}° {h.tilt_stddev_deg!=null && <em>(±{h.tilt_stddev_deg}° על {h.valid_frame_count} פריימים)</em>} {h.tilt_worsening && <span className="hz-worsen">מחמיר ↑</span>}</td></tr>
+          : <tr><th>זווית נטייה</th><td className="hz-noangle">לא ניתן למדוד בצורה אמינה — נדרש צילום נוסף</td></tr>)}
+        {h.category_key==='leaning_pole' && <tr><th>בסיס העמוד</th><td>{h.base_visible?'נראה בתמונה':'לא מאומת — דרושה בדיקת שטח'}</td></tr>}
         <tr><th>מקור</th><td>{SOURCE_HE[h.source]||h.source}</td></tr>
-        <tr><th>ביטחון</th><td>{Math.round(h.confidence*100)}%</td></tr>
+        <tr><th>ודאות</th><td>מזהה {Math.round((h.final_confidence??h.confidence)*100)}%{h.geometry_confidence!=null?` · גיאומטריה ${Math.round(h.geometry_confidence*100)}%`:''}</td></tr>
         <tr><th>זוהה</th><td>{h.observation_count} פעמים · {h.distinct_scan_days} ימי סריקה</td></tr>
         <tr><th>זוהה לראשונה</th><td>{new Date(h.first_detected_at).toLocaleString('he-IL')}</td></tr>
         <tr><th>זוהה לאחרונה</th><td>{new Date(h.last_detected_at).toLocaleString('he-IL')}</td></tr>

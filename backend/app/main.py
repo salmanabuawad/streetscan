@@ -5,8 +5,10 @@ from app.api.routes import router
 from app.api.hazards_routes import router as hazards_router
 from app.db.session import Base, engine
 from app.models import hazards as _hazards  # noqa: F401 — register hazard tables
+from app import migrate as _migrate
 
-Base.metadata.create_all(bind=engine)
+Base.metadata.create_all(bind=engine)   # create any missing tables
+_migrate.run()                          # then apply ordered column migrations
 
 app = FastAPI(title=settings.app_name)
 app.add_middleware(

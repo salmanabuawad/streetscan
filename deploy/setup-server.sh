@@ -66,7 +66,12 @@ fi
 grep -q '^JWT_SECRET=' $DEPLOY_ROOT/backend/.env || \
     echo "JWT_SECRET=$(openssl rand -hex 32)" >> $DEPLOY_ROOT/backend/.env
 
-echo "== schema migrations =="
+echo "== tracked SQL migrations =="
+# Proper forward-only migrations (backend/migrations/*.sql via app.migrate),
+# replacing ad-hoc ALTERs. Also runs automatically on API startup.
+sudo -u $APP_USER .venv/bin/python -m app.migrate || true
+
+echo "== legacy schema migrations (pre-migrate-framework columns) =="
 # create_all only creates missing tables; columns added later need ALTERs here.
 sudo -u postgres psql $DB_NAME -c "ALTER TABLE IF EXISTS video_segments ADD COLUMN IF NOT EXISTS orientation_hint INTEGER NOT NULL DEFAULT 0"
 sudo -u postgres psql $DB_NAME -c "ALTER TABLE IF EXISTS gps_points ADD COLUMN IF NOT EXISTS heading_deg DOUBLE PRECISION"

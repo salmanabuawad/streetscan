@@ -43,6 +43,19 @@ function TiltOverlay({ path, obs, className }: { path:string; obs:any; className
   </div>;
 }
 
+// Full-screen viewer for a detection image (click any thumbnail to open).
+function Lightbox({ path, onClose }: { path:string; onClose:()=>void }) {
+  useEffect(() => {
+    const onKey = (e:KeyboardEvent) => { if (e.key==='Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+  return <div className="lightbox" onClick={onClose}>
+    <button className="lightbox-close" onClick={onClose}>✕</button>
+    <AuthImg path={path} alt="" className="lightbox-img"/>
+  </div>;
+}
+
 type Cat = { key:string; name_he:string; group:string; color:string; icon:string; department:string };
 type Hazard = {
   id:number; category_key:string; category_he:string; color:string; group:string;
@@ -58,7 +71,7 @@ type ReviewItem = {
   id:number; hazard_id:number|null; category_key:string; category_he:string; color:string;
   confidence:number; band:string; severity:string|null; lat:number|null; lng:number|null;
   location_accuracy_m:number|null; image_quality:string|null; quality_flags:string|null;
-  detector:string; captured_at:string|null; has_image:boolean; subtype?:string|null;
+  detector:string; captured_at:string|null; has_image:boolean; subtype?:string|null; image_obs_id?:number;
   tilt_degrees?:number|null; baseline_deg?:number|null; base_visible?:boolean|null;
   cables_condition?:string|null; bbox?:string|null; tilt_axis?:string|null;
 };
@@ -136,6 +149,7 @@ function Tile({label,value,tone}:{label:string;value:any;tone?:string}) {
 function Review({catBy}:{catBy:Record<string,Cat>}) {
   const [items, setItems] = useState<ReviewItem[]>([]);
   const [busy, setBusy] = useState<number|null>(null);
+  const [zoom, setZoom] = useState<string|null>(null);
   const load = () => api<{items:ReviewItem[]}>('/hazards/review').then(r=>setItems(r.items)).catch(console.error);
   useEffect(() => { load(); }, []);
   const act = async (o:ReviewItem, path:string, body?:any) => {
@@ -145,14 +159,16 @@ function Review({catBy}:{catBy:Record<string,Cat>}) {
   };
   if (!items.length) return <div className="hz-empty">אין זיהויים הממתינים לבדיקה. סריקות חדשות יופיעו כאן.</div>;
   return <div className="hz-review-grid">
+    {zoom && <Lightbox path={zoom} onClose={()=>setZoom(null)}/>}
     {items.map(o => {
       const cat = catBy[o.category_key];
+      const imgPath = `/hazards/observations/${o.image_obs_id||o.id}/image`;
       return <div className="hz-card" key={o.id}>
-        <div className="hz-card-media">
+        <div className="hz-card-media zoomable" onClick={()=>o.has_image&&setZoom(imgPath)} title="הגדל תמונה">
           {!o.has_image ? <div className="hz-noimg">אין תמונה</div>
             : o.category_key==='leaning_pole' && o.tilt_axis
-              ? <TiltOverlay path={`/hazards/observations/${o.id}/image`} obs={o}/>
-              : <AuthImg path={`/hazards/observations/${o.id}/image`} alt={o.category_he}/>}
+              ? <TiltOverlay path={imgPath} obs={o}/>
+              : <AuthImg path={imgPath} alt={o.category_he}/>}
           <span className="hz-badge" style={{background:SEV_COLOR[o.severity||'medium']}}>{SEV_HE[o.severity||'medium']}</span>
         </div>
         <div className="hz-card-body">
@@ -236,6 +252,7 @@ function HazardModal({h, catBy, onClose, onChanged}:{h:Hazard; catBy:Record<stri
   const [detail, setDetail] = useState<any>(null);
   const [dept, setDept] = useState(h.department||catBy[h.category_key]?.department||'');
   const [busy, setBusy] = useState(false);
+  const [zoom, setZoom] = useState<string|null>(null);
   useEffect(()=>{ api(`/hazards/${h.id}`).then(setDetail).catch(console.error); }, [h.id]);
   const doAct = async (path:string, body:any) => {
     setBusy(true);
@@ -243,7 +260,9 @@ function HazardModal({h, catBy, onClose, onChanged}:{h:Hazard; catBy:Record<stri
     catch(e){ alert('שגיאה: '+e); } finally { setBusy(false); }
   };
   const bestObs = detail?.observations?.find((o:any)=>o.id===h.best_observation_id) || detail?.observations?.[0];
+  const imgPath = bestObs ? `/hazards/observations/${bestObs.id}/image` : '';
   return <div className="modal-backdrop above-map" onClick={onClose}>
+    {zoom && <Lightbox path={zoom} onClose={()=>setZoom(null)}/>}
     <div className="modal hz-modal" onClick={e=>e.stopPropagation()}>
       <div className="hz-modal-head">
         <h3><span className="hz-dot" style={{background:h.color}}/>{h.category_he}</h3>
@@ -251,9 +270,11 @@ function HazardModal({h, catBy, onClose, onChanged}:{h:Hazard; catBy:Record<stri
       </div>
       {!bestObs?.has_image
         ? <div className="hz-noimg wide">אין תמונת זיהוי</div>
-        : h.category_key==='leaning_pole' && bestObs.tilt_axis
-          ? <TiltOverlay path={`/hazards/observations/${bestObs.id}/image`} obs={bestObs} className="wide"/>
-          : <AuthImg path={`/hazards/observations/${bestObs.id}/image`} alt={h.category_he}/>}
+        : <div className="zoomable" onClick={()=>setZoom(imgPath)} title="הגדל תמונה">
+            {h.category_key==='leaning_pole' && bestObs.tilt_axis
+              ? <TiltOverlay path={imgPath} obs={bestObs} className="wide"/>
+              : <AuthImg path={imgPath} alt={h.category_he}/>}
+          </div>}
       {h.category_key==='leaning_pole' && <div className="hz-inspect-note">
         זוהתה נטייה חריגה בעמוד. נדרשת בדיקת שטח לאימות מצב הבסיס ורמת הסיכון.
       </div>}

@@ -100,6 +100,7 @@ def ingest_observation(db: Session, *, category_key: str, confidence: float,
                        tilt_degrees: float | None = None, baseline_deg: float | None = None,
                        base_visible: bool | None = None, cables_condition: str | None = None,
                        tilt_axis: str | None = None, severity_override: HazardSeverity | None = None,
+                       image_score: float = 0.0,
                        captured_at: datetime | None = None) -> tuple[HazardObservation, Hazard | None]:
     """Turn one detection into a stored observation and fold it into a Hazard.
 
@@ -131,7 +132,7 @@ def ingest_observation(db: Session, *, category_key: str, confidence: float,
         detector_name=detector_name, detector_version=detector_version,
         image_quality=image_quality, quality_flags=quality_flags,
         tilt_degrees=tilt_degrees, baseline_deg=baseline_deg, base_visible=base_visible,
-        cables_condition=cables_condition, tilt_axis=tilt_axis,
+        cables_condition=cables_condition, tilt_axis=tilt_axis, image_score=image_score,
         captured_at=captured_at,
     )
     db.add(obs)
@@ -186,8 +187,13 @@ def ingest_observation(db: Session, *, category_key: str, confidence: float,
     hz.last_detected_at = now
     hz.missed_scans = 0
     if confidence > hz.confidence:
-        hz.confidence, hz.latitude, hz.longitude = confidence, lat, lng
-        hz.location_accuracy_m, hz.best_observation_id = acc, obs.id
+        hz.confidence = confidence
+    # The representative shot + the hazard's map position come from the BEST-quality
+    # observation (sharpest, closest, best-framed), not just the most confident one.
+    best = db.get(HazardObservation, hz.best_observation_id) if hz.best_observation_id else None
+    if best is None or image_score > (best.image_score or 0.0):
+        hz.best_observation_id = obs.id
+        hz.latitude, hz.longitude, hz.location_accuracy_m = lat, lng, acc
     # severity can only rise from a repeat sighting
     if _SEV_ORDER.index(severity) > _SEV_ORDER.index(hz.severity):
         hz.severity = severity

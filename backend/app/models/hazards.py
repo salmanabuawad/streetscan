@@ -185,6 +185,7 @@ class HazardObservation(Base):
     base_visible: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     cables_condition: Mapped[str | None] = mapped_column(String(40), nullable=True)  # ok|suspected_tension|low|slack
     tilt_axis: Mapped[str | None] = mapped_column(String(60), nullable=True)   # "x1,y1,x2,y2" pole axis in image px
+    image_score: Mapped[float] = mapped_column(Float, default=0.0)   # best-shot rank within the hazard
     detector_name: Mapped[str] = mapped_column(String(60), default="openvocab")
     detector_version: Mapped[str] = mapped_column(String(60), default="owlvit")
     status: Mapped[str] = mapped_column(String(20), default="pending")  # pending|approved|rejected|duplicate|training_only

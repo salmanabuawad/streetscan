@@ -87,9 +87,17 @@ def review_queue(limit: int = 200, db: Session = Depends(get_db)):
         select(HazardObservation).where(HazardObservation.status == "pending")
         .order_by(HazardObservation.confidence.desc()).limit(limit)
     ).all()
+    # show each hazard's BEST-quality shot (moving camera saw it many times)
+    haz_ids = {o.hazard_id for o in obs if o.hazard_id}
+    best_of = {h.id: h.best_observation_id
+               for h in db.scalars(select(Hazard).where(Hazard.id.in_(haz_ids or {0}))).all()}
+    best_ids = {v for v in best_of.values() if v}
+    best_obs = {b.id: b for b in db.scalars(
+        select(HazardObservation).where(HazardObservation.id.in_(best_ids or {0}))).all()}
     out = []
     for o in obs:
         c = cats.get(o.category_key)
+        disp = best_obs.get(best_of.get(o.hazard_id)) or o   # the shot to show
         out.append({
             "id": o.id, "hazard_id": o.hazard_id, "category_key": o.category_key,
             "category_he": c.name_he if c else o.category_key,
@@ -99,10 +107,10 @@ def review_queue(limit: int = 200, db: Session = Depends(get_db)):
             "image_quality": o.image_quality, "quality_flags": o.quality_flags,
             "detector": o.detector_name, "camera_id": o.camera_id, "subtype": o.subtype,
             "captured_at": o.captured_at.isoformat() if o.captured_at else None,
-            "has_image": bool(o.annotated_path or o.crop_path),
-            "tilt_degrees": o.tilt_degrees, "baseline_deg": o.baseline_deg,
-            "base_visible": o.base_visible, "cables_condition": o.cables_condition,
-            "bbox": o.bbox, "tilt_axis": o.tilt_axis,
+            "image_obs_id": disp.id, "has_image": bool(disp.annotated_path or disp.crop_path),
+            "tilt_degrees": disp.tilt_degrees, "baseline_deg": disp.baseline_deg,
+            "base_visible": disp.base_visible, "cables_condition": disp.cables_condition,
+            "bbox": disp.bbox, "tilt_axis": disp.tilt_axis,
         })
     return {"count": len(out), "items": out}
 

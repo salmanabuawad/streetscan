@@ -120,6 +120,7 @@ def process_image_hazards(db, image: CapturedImage, engine) -> int:
     """OWL-ViT hazard scan of one still -> HazardObservations via the lifecycle
     service (dedup, severity, position estimate). Quality-gated."""
     from app import hazard_service as hsvc
+    from app.imaging import image_quality_score
     frame = cv2.imread(image.filename)
     if frame is None:
         return 0
@@ -140,6 +141,7 @@ def process_image_hazards(db, image: CapturedImage, engine) -> int:
             route_id=image.route_id, image_id=image.id,
             detector_name="openvocab", detector_version="owlvit",
             image_quality=quality, quality_flags=flags,
+            image_score=image_quality_score(frame, a.box),
             captured_at=image.captured_at,
         )
         if hz:
@@ -157,6 +159,7 @@ def scan_tilt_hazards(db, detected, frame, *, route_id, image_id, camera=None,
     from app import tilt as tiltmod
     from app import hazard_service as hsvc
     from app.models.hazards import HazardSeverity
+    from app.imaging import image_quality_score
     made = 0
     for a in detected:
         subtype = tiltmod.POLE_SUBTYPES.get(a.proposed_category)
@@ -180,6 +183,7 @@ def scan_tilt_hazards(db, detected, frame, *, route_id, image_id, camera=None,
             base_visible=res["base_visible"], cables_condition=res["cables_condition"],
             tilt_axis=",".join(str(v) for v in res["axis"]),
             severity_override=(HazardSeverity(sev) if sev else None),
+            image_score=image_quality_score(frame, a.box),
             captured_at=captured_at,
         )
         if hz:
@@ -193,6 +197,7 @@ def process_segment_hazards(db, segment: VideoSegment, hz_engine, asset_engine) 
     OWL-ViT Hazard Engine (potholes, garbage, bins, signs...) — and fold results
     into hazards. Quality-gated; frames without a GPS fix are skipped."""
     from app import hazard_service as hsvc
+    from app.imaging import image_quality_score
     cap, rotate_code = open_capture(segment.filename)
     if not cap.isOpened():
         return 0
@@ -246,13 +251,57 @@ def process_segment_hazards(db, segment: VideoSegment, hz_engine, asset_engine) 
                             crop_path=a.crop_path, annotated_path=hres.annotated_path,
                             route_id=segment.route_id, image_id=None, video_segment_id=segment.id,
                             detector_name="openvocab", detector_version="owlvit",
-                            image_quality=quality, quality_flags=flags, captured_at=frame_time)
+                            image_quality=quality, quality_flags=flags,
+                            image_score=image_quality_score(frame, a.box), captured_at=frame_time)
                         if hz:
                             made += 1
                     db.commit()
         idx += 1
     cap.release()
     return made
+
+
+def upsert_candidate(db, frame, a, *, route_id, image_id, image_sequence, capture_type,
+                     lat, lng, annotated_path, processing_ms) -> int:
+    """Create a candidate asset — OR, if this is the same physical object already
+    seen in this scan (same category within SAME_ASSET_M, not yet reviewed), keep
+    whichever detection has the better image. A moving camera sees each pole/bin
+    in many frames; this collapses them to one record holding the best shot.
+    Returns 1 when a new candidate was created, 0 when it merged into an existing."""
+    from app.imaging import image_quality_score
+    score = image_quality_score(frame, a.box)
+    bbox = ",".join(str(round(x, 1)) for x in a.box)
+    if lat is not None and lng is not None:
+        here = (lat, lng)
+        existing = db.scalars(select(CandidateAsset).where(
+            CandidateAsset.route_id == route_id,
+            CandidateAsset.proposed_category == a.proposed_category,
+            CandidateAsset.status == CandidateStatus.PENDING_VALIDATION,
+            CandidateAsset.latitude.is_not(None),
+        )).all()
+        for c in existing:
+            if meters_between(here, (c.latitude, c.longitude)) < SAME_ASSET_M:
+                if score > (c.image_score or 0.0):     # this frame is a better view — adopt it
+                    c.crop_path, c.annotated_path, c.bbox = a.crop_path, annotated_path, bbox
+                    c.image_id, c.image_score = image_id, score
+                    c.latitude, c.longitude = lat, lng
+                if a.confidence > c.confidence:
+                    c.confidence = a.confidence
+                    c.confidence_band = _band(a.confidence, a.detector_name)
+                return 0
+    db.add(CandidateAsset(
+        image_id=image_id, route_id=route_id, image_sequence=image_sequence,
+        capture_type=capture_type, proposed_category=a.proposed_category,
+        infrastructure_layer=a.infrastructure_layer, confidence=a.confidence,
+        bbox=bbox, crop_path=a.crop_path, annotated_path=annotated_path,
+        ocr_text=a.ocr_text, ocr_language=a.ocr_language, ocr_confidence=a.ocr_confidence,
+        condition=a.condition, defect=a.defect, image_score=score,
+        detector_name=a.detector_name, detector_version=a.detector_version,
+        latitude=lat, longitude=lng,
+        confidence_band=_band(a.confidence, a.detector_name), processing_ms=processing_ms,
+        status=CandidateStatus.PENDING_VALIDATION,
+    ))
+    return 1
 
 
 def process_image_engine(db, image: CapturedImage, engine) -> int:
@@ -273,21 +322,13 @@ def process_image_engine(db, image: CapturedImage, engine) -> int:
                 log.info("image %s -> %d leaning-pole hazards", image.id, n)
         except Exception:
             log.exception("tilt analysis on image %s failed; skipping", image.id)
+    made = 0
     for a in result.assets:
-        db.add(CandidateAsset(
-            image_id=image.id, route_id=image.route_id, image_sequence=image.id,
-            capture_type=image.kind, proposed_category=a.proposed_category,
-            infrastructure_layer=a.infrastructure_layer, confidence=a.confidence,
-            bbox=",".join(str(round(x, 1)) for x in a.box), crop_path=a.crop_path,
-            annotated_path=result.annotated_path, ocr_text=a.ocr_text,
-            ocr_language=a.ocr_language, ocr_confidence=a.ocr_confidence,
-            condition=a.condition, defect=a.defect, quality_score=image.blur_score,
-            detector_name=a.detector_name, detector_version=a.detector_version,
-            latitude=image.latitude, longitude=image.longitude,
-            confidence_band=_band(a.confidence, a.detector_name), processing_ms=result.processing_ms,
-            status=CandidateStatus.PENDING_VALIDATION,
-        ))
-    return len(result.assets)
+        made += upsert_candidate(db, frame, a, route_id=image.route_id, image_id=image.id,
+                                 image_sequence=image.id, capture_type=image.kind,
+                                 lat=image.latitude, lng=image.longitude,
+                                 annotated_path=result.annotated_path, processing_ms=result.processing_ms)
+    return made
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 log = logging.getLogger("streetscan.worker")
@@ -716,25 +757,13 @@ def _engine_frame(db, segment: VideoSegment, frame, point: GPSPoint,
     result = engine.analyze_image("", ctx, frame=frame)
     created = 0
     for a in result.assets:
-        here = (point.latitude, point.longitude)
-        if any(cat == a.proposed_category and meters_between(here, (lat, lng)) < SAME_ASSET_M
-               for cat, lat, lng in kept):
-            continue
-        kept.append((a.proposed_category, point.latitude, point.longitude))
-        db.add(CandidateAsset(
-            route_id=segment.route_id, capture_type="video",
-            proposed_category=a.proposed_category,
-            infrastructure_layer=a.infrastructure_layer, confidence=a.confidence,
-            bbox=",".join(str(round(x, 1)) for x in a.box), crop_path=a.crop_path,
-            annotated_path=result.annotated_path, ocr_text=a.ocr_text,
-            ocr_language=a.ocr_language, ocr_confidence=a.ocr_confidence,
-            condition=a.condition, defect=a.defect,
-            detector_name=a.detector_name, detector_version=a.detector_version,
-            latitude=point.latitude, longitude=point.longitude,
-            confidence_band=_band(a.confidence, a.detector_name), processing_ms=result.processing_ms,
-            status=CandidateStatus.PENDING_VALIDATION,
-        ))
-        created += 1
+        # DB-backed dedup across the whole scan (all segments + stills), keeping
+        # the best shot — replaces the old per-segment first-wins `kept` list.
+        created += upsert_candidate(db, frame, a, route_id=segment.route_id, image_id=None,
+                                    image_sequence=None, capture_type="video",
+                                    lat=point.latitude, lng=point.longitude,
+                                    annotated_path=result.annotated_path,
+                                    processing_ms=result.processing_ms)
     return created
 
 

@@ -314,3 +314,9 @@ th{color:#94a3b8}
 .hz-inspect-note{background:#3b0a14;border:1px solid #7f1d1d;color:#fecdd3;border-radius:10px;padding:9px 12px;margin:10px 0;font-size:13px}
 .hz-worsen{color:#f87171;font-weight:700;font-size:12px}
 .hz-modal .tilt-frame.wide{max-height:44vh;aspect-ratio:16/10;border-radius:10px;overflow:hidden}
+
+/* hazard image lightbox */
+.zoomable{cursor:zoom-in}
+.lightbox{position:fixed;inset:0;z-index:2000;background:rgba(0,0,0,.9);display:flex;align-items:center;justify-content:center;padding:20px;cursor:zoom-out}
+.lightbox-img{max-width:96vw;max-height:94vh;object-fit:contain;border-radius:8px}
+.lightbox-close{position:fixed;top:16px;inset-inline-end:20px;background:#111827;border:1px solid #334155;color:#fff;border-radius:10px;padding:8px 12px;font-size:16px;cursor:pointer;z-index:2001}

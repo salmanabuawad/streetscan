@@ -173,6 +173,7 @@ class CandidateAsset(Base):
     condition: Mapped[str | None] = mapped_column(String(40), nullable=True)
     defect: Mapped[str | None] = mapped_column(String(80), nullable=True)
     quality_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    image_score: Mapped[float] = mapped_column(Float, default=0.0)   # best-shot rank
     dup_group: Mapped[str | None] = mapped_column(String(40), nullable=True)
     detector_name: Mapped[str] = mapped_column(String(60))
     detector_version: Mapped[str] = mapped_column(String(60))

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Camera, MapPin, Database, Route as RouteIcon, UploadCloud, StopCircle, PlayCircle, ScanSearch, Check, X, Film, Trash2, LogOut, Gauge, Compass, BatteryMedium, Wifi, WifiOff, ImageIcon, Store, GraduationCap, Boxes, Tags, StepBack, StepForward } from 'lucide-react';
+import { Camera, MapPin, Database, Route as RouteIcon, UploadCloud, StopCircle, PlayCircle, ScanSearch, Check, X, Film, Trash2, LogOut, Gauge, Compass, BatteryMedium, Wifi, WifiOff, ImageIcon, Store, GraduationCap, Boxes, Tags, StepBack, StepForward, AlertTriangle } from 'lucide-react';
 import { api, getToken, setToken, fetchMediaUrl, downloadFile } from './services/api';
 import { queueSegment, queueGpsPoint, queueImage, pendingCounts, startAutoFlush } from './services/offlineQueue';
 import { AuthImg, AuthVideo } from './AuthMedia';
@@ -7,6 +7,7 @@ import Login from './Login';
 import MapView from './MapView';
 import CommandCenter from './CommandCenter';
 import BBoxPicker, { type Box } from './BBoxPicker';
+import Hazards from './Hazards';
 
 const SEGMENT_MS = 15000;
 
@@ -142,7 +143,7 @@ export default function App() {
   const [user, setUser] = useState<UserInfo | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
 
-  const [tab, setTab] = useState<'record'|'videos'|'detections'|'businesses'|'candidates'|'training'|'assets'|'dashboard'>('record');
+  const [tab, setTab] = useState<'record'|'videos'|'detections'|'businesses'|'candidates'|'training'|'assets'|'hazards'|'dashboard'>('record');
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
   const [assets, setAssets] = useState<Asset[]>([]);
   const [businesses, setBusinesses] = useState<Business[]>([]);
@@ -839,6 +840,7 @@ export default function App() {
         <GraduationCap size={18}/> תיוג לאימון
       </button>
       <button onClick={()=>setTab('assets')} className={tab==='assets'?'active':''}><Database size={18}/> נכסים</button>
+      <button onClick={()=>setTab('hazards')} className={tab==='hazards'?'active':''}><AlertTriangle size={18}/> מפגעים</button>
       <button onClick={()=>setTab('dashboard')} className={tab==='dashboard'?'active':''}><MapPin size={18}/> לוח בקרה</button>
     </nav>
 
@@ -1311,6 +1313,8 @@ export default function App() {
           </table>
         </div>
       </section>}
+
+      {tab==='hazards' && <Hazards/>}
 
       {tab==='dashboard' && <section>
         <CommandCenter layerLabels={layerLabels} assetTypeLabels={assetTypeLabels}

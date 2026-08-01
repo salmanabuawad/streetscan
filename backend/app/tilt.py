@@ -1,29 +1,19 @@
-"""Leaning-pole tilt analyzer — a Hazard Detection Engine capability.
+"""Conservative leaning-pole geometry analysis.
 
-Given a frame and a pole/sign/tree bounding box (from the Asset Detection
-Engine's electricity/communication sub-engine, or an OWL-ViT hazard detection),
-estimate how far the object leans from true vertical.
-
-Key idea for perspective robustness: DON'T measure the pole against the image
-edge (the truck/camera may be rolled or the pole may be off-centre, which reads
-as tilt under perspective). Instead measure it against the *scene's own vertical
-structures* — building edges and other poles — whose length-weighted median
-angle gives the apparent-vertical baseline for that frame. A pole that deviates
-from what everything else agrees is vertical is genuinely leaning.
-
-Single-frame tilt from an uncalibrated dashcam is inherently noisy, so the
-lifecycle keeps these SUSPECTED and requires field inspection; confidence
-strengthens across frames/scans (see hazard_service).
+This module intentionally prefers "no reliable measurement" over a false angle.
+It does not treat the longest Hough line as a pole axis. Without a segmentation
+mask, it requires two long, parallel pole edges and fits their midpoint axis.
 """
 from __future__ import annotations
+
 import math
+from dataclasses import dataclass
 
 import cv2
 import numpy as np
 
 LEANING_KEY = "leaning_pole"
 
-# asset_type that the Asset Detection Engine may emit -> pole subtype we track
 POLE_SUBTYPES = {
     "electricity_pole": "electric_pole", "electric_pole": "electric_pole",
     "utility_pole": "utility_pole", "telecom_pole": "telecom_pole",
@@ -34,109 +24,204 @@ SUBTYPE_HE = {
     "electric_pole": "עמוד חשמל", "utility_pole": "עמוד תשתית", "telecom_pole": "עמוד תקשורת",
     "light_pole": "עמוד תאורה", "sign": "תמרור", "tree": "עץ נוטה",
 }
-# per-subtype tilt thresholds (deg): (monitor, suspect, high). Signs/trees are
-# more tolerant; a light pole leaning is more alarming than a guy-wired telecom pole.
 SUBTYPE_THRESHOLDS = {
     "electric_pole": (3, 5, 10), "utility_pole": (3, 5, 10), "light_pole": (3, 5, 10),
     "telecom_pole": (4, 7, 12), "sign": (5, 10, 20), "tree": (8, 15, 30),
 }
 
 
-def _line_angle_deg(x1, y1, x2, y2) -> float:
-    """Angle of a segment from vertical, in degrees (0 = perfectly vertical)."""
-    dx, dy = (x2 - x1), (y2 - y1)
-    if dy == 0:
-        return 90.0
-    return math.degrees(math.atan2(dx, -dy))  # image y grows downward
+@dataclass(frozen=True)
+class _Line:
+    angle: float
+    length: float
+    coords: tuple[int, int, int, int]
 
 
-def _near_vertical_lines(gray, max_from_vertical=35.0):
-    """HoughP lines that are within `max_from_vertical` of vertical, as
-    (angle, length, (x1,y1,x2,y2))."""
-    edges = cv2.Canny(gray, 60, 160)
-    lines = cv2.HoughLinesP(edges, 1, math.pi / 180, threshold=40,
-                            minLineLength=max(20, gray.shape[0] // 6), maxLineGap=12)
-    out = []
-    if lines is None:
-        return out
-    for l in np.asarray(lines).reshape(-1, 4):
-        x1, y1, x2, y2 = (int(v) for v in l)
-        ang = _line_angle_deg(x1, y1, x2, y2)
-        if abs(ang) <= max_from_vertical:
-            out.append((ang, math.hypot(x2 - x1, y2 - y1), (x1, y1, x2, y2)))
-    return out
+def _line_angle_deg(x1: int, y1: int, x2: int, y2: int) -> float:
+    """Signed angle from image vertical. 0 is vertical; +/-90 is horizontal."""
+    dx, dy = x2 - x1, y2 - y1
+    if dx == 0 and dy == 0:
+        return 0.0
+    return math.degrees(math.atan2(dx, abs(dy) + 1e-9))
 
 
-def _weighted_median_angle(items) -> float | None:
-    if not items:
+def _hough_lines(gray: np.ndarray, max_from_vertical: float, min_length: int) -> list[_Line]:
+    blur = cv2.GaussianBlur(gray, (5, 5), 0)
+    edges = cv2.Canny(blur, 60, 160)
+    raw = cv2.HoughLinesP(
+        edges, 1, math.pi / 180, threshold=max(24, min_length // 3),
+        minLineLength=min_length, maxLineGap=max(8, min_length // 10),
+    )
+    result: list[_Line] = []
+    if raw is None:
+        return result
+    for row in np.asarray(raw).reshape(-1, 4):
+        x1, y1, x2, y2 = (int(v) for v in row)
+        angle = _line_angle_deg(x1, y1, x2, y2)
+        if abs(angle) <= max_from_vertical:
+            result.append(_Line(angle, math.hypot(x2 - x1, y2 - y1), (x1, y1, x2, y2)))
+    return result
+
+
+def _x_at_y(line: _Line, y: float) -> float | None:
+    x1, y1, x2, y2 = line.coords
+    if abs(y2 - y1) < 1e-6:
         return None
-    items = sorted(items, key=lambda t: t[0])
-    total = sum(w for _, w, _ in items)
-    acc = 0.0
-    for ang, w, _ in items:
-        acc += w
-        if acc >= total / 2:
-            return ang
-    return items[-1][0]
+    t = (y - y1) / (y2 - y1)
+    return x1 + t * (x2 - x1)
 
 
-def estimate_tilt(frame, bbox) -> dict | None:
-    """Estimate a pole's tilt. Returns None when no reliable axis is found.
-    `bbox` = (x1,y1,x2,y2) in frame pixels."""
-    h, w = frame.shape[:2]
-    x1, y1, x2, y2 = (int(v) for v in bbox)
-    # pad the crop a little so the axis line is well supported
-    px, py = int((x2 - x1) * 0.15), int((y2 - y1) * 0.05)
-    cx1, cy1 = max(0, x1 - px), max(0, y1 - py)
-    cx2, cy2 = min(w, x2 + px), min(h, y2 + py)
-    crop = frame[cy1:cy2, cx1:cx2]
-    if crop.size == 0:
-        return None
-    cgray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-    pole_lines = _near_vertical_lines(cgray, max_from_vertical=40.0)
-    if not pole_lines:
-        return None
-    # the pole axis = the longest near-vertical line in the crop
-    pole_lines.sort(key=lambda t: -t[1])
-    pole_ang, _len, (ax1, ay1, ax2, ay2) = pole_lines[0]
-    # Scene baseline = length-weighted median of OTHER near-vertical structures
-    # (buildings, other poles). Exclude the measured pole's own bbox, or it votes
-    # for its own "vertical" and the tilt reads as zero. Fall back to image
-    # vertical when the scene has too few reference verticals to trust.
-    fgray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    scene = []
-    for ang, ln, (lx1, ly1, lx2, ly2) in _near_vertical_lines(fgray, 30.0):
+def _y_overlap(a: _Line, b: _Line) -> tuple[float, float, float]:
+    ay1, ay2 = sorted((a.coords[1], a.coords[3]))
+    by1, by2 = sorted((b.coords[1], b.coords[3]))
+    lo, hi = max(ay1, by1), min(ay2, by2)
+    return lo, hi, max(0.0, hi - lo)
+
+
+def _find_parallel_edges(lines: list[_Line], crop_w: int, crop_h: int):
+    """Find two long parallel edges plausibly belonging to one pole body."""
+    best = None
+    min_overlap = crop_h * 0.45
+    min_sep = max(3.0, crop_w * 0.015)
+    max_sep = crop_w * 0.45
+    for i, left in enumerate(lines):
+        for right in lines[i + 1:]:
+            if abs(left.angle - right.angle) > 4.0:
+                continue
+            lo, hi, overlap = _y_overlap(left, right)
+            if overlap < min_overlap:
+                continue
+            mid_y = (lo + hi) / 2
+            lx, rx = _x_at_y(left, mid_y), _x_at_y(right, mid_y)
+            if lx is None or rx is None:
+                continue
+            sep = abs(rx - lx)
+            if not (min_sep <= sep <= max_sep):
+                continue
+            # Prefer long overlap, close angle agreement and a narrow pole body.
+            score = (overlap / crop_h) * 0.65 + (1 - abs(left.angle - right.angle) / 4) * 0.2 + (1 - sep / max_sep) * 0.15
+            if best is None or score > best[0]:
+                best = (score, left, right, lo, hi, sep)
+    return best
+
+
+def _scene_vertical(frame: np.ndarray, excluded_bbox: tuple[int, int, int, int]) -> tuple[float | None, float]:
+    """Estimate scene vertical conservatively from multiple long structural lines."""
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    h, _ = gray.shape
+    lines = _hough_lines(gray, max_from_vertical=15.0, min_length=max(40, h // 5))
+    x1, y1, x2, y2 = excluded_bbox
+    usable = []
+    for line in lines:
+        lx1, ly1, lx2, ly2 = line.coords
         mx, my = (lx1 + lx2) / 2, (ly1 + ly2) / 2
-        if x1 <= mx <= x2 and y1 <= my <= y2:      # inside the pole box — skip
+        if x1 <= mx <= x2 and y1 <= my <= y2:
             continue
-        scene.append((ang, ln, (lx1, ly1, lx2, ly2)))
-    baseline = _weighted_median_angle(scene) if len(scene) >= 2 else 0.0
-    tilt = round(abs(pole_ang - baseline), 1)
+        usable.append(line)
+    if len(usable) < 3:
+        return None, 0.0
+    angles = np.asarray([line.angle for line in usable], dtype=float)
+    median = float(np.median(angles))
+    mad = float(np.median(np.abs(angles - median)))
+    confidence = max(0.0, min(1.0, (len(usable) / 8.0) * (1.0 - min(mad, 8.0) / 8.0)))
+    if confidence < 0.45:
+        return None, confidence
+    return median, confidence
 
-    base_visible = y2 <= h - 6            # bottom of box not cut off by the frame edge
-    # cheap cable heuristic: strong near-horizontal edges around the pole top
-    top = frame[max(0, y1 - 10):y1 + int((y2 - y1) * 0.25), max(0, x1 - 30):min(w, x2 + 30)]
-    cables = None
-    if top.size:
-        hl = cv2.HoughLinesP(cv2.Canny(cv2.cvtColor(top, cv2.COLOR_BGR2GRAY), 60, 160),
-                             1, math.pi / 180, 30, minLineLength=25, maxLineGap=8)
-        if hl is not None and any(abs(_line_angle_deg(*l) - 90) < 20
-                                  for l in np.asarray(hl).reshape(-1, 4)):
-            cables = "present"
-    conf_factor = min(1.0, pole_lines[0][1] / max(1, (cy2 - cy1)))  # axis length vs crop height
-    # map axis endpoints back to full-frame coords
-    axis = [ax1 + cx1, ay1 + cy1, ax2 + cx1, ay2 + cy1]
-    return {
-        "tilt_degrees": tilt, "baseline_deg": round(baseline, 1),
-        "base_visible": base_visible, "cables_condition": cables,
-        "axis": axis, "confidence_factor": round(conf_factor, 2),
+
+def estimate_tilt(frame: np.ndarray, bbox) -> dict:
+    """Return a conservative geometry result.
+
+    `angle_is_valid` is false unless two pole-like parallel edges and a reliable
+    scene vertical are available. Callers must never display or persist an angle
+    when `angle_is_valid` is false.
+    """
+    h, w = frame.shape[:2]
+    x1, y1, x2, y2 = [int(round(v)) for v in bbox]
+    x1, x2 = sorted((max(0, x1), min(w - 1, x2)))
+    y1, y2 = sorted((max(0, y1), min(h - 1, y2)))
+    bw, bh = x2 - x1, y2 - y1
+    reasons: list[str] = []
+
+    result = {
+        "tilt_degrees": None, "corrected_tilt_degrees": None,
+        "raw_axis_angle_degrees": None, "baseline_deg": None,
+        "angle_is_valid": False, "base_visible": False,
+        "base_occluded": True, "occlusion_reason": "not_verified",
+        "cables_condition": None, "axis": None,
+        "geometry_confidence": 0.0, "confidence_factor": 0.0,
+        "rejection_reasons": reasons,
     }
+    if bw < 8 or bh < 40:
+        reasons.append("bounding_box_too_small")
+        return result
+    if bw > w * 0.45:
+        reasons.append("bounding_box_too_wide")
+        return result
+    if bh / max(bw, 1) < 1.35:
+        reasons.append("bounding_box_not_pole_shaped")
+        return result
+
+    # Analyze only inside the detector box; no padding that invites cables/buildings.
+    crop = frame[y1:y2, x1:x2]
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    lines = _hough_lines(gray, max_from_vertical=35.0, min_length=max(25, int(bh * 0.35)))
+    pair = _find_parallel_edges(lines, bw, bh)
+    if pair is None:
+        reasons.append("no_valid_parallel_pole_edges")
+        return result
+
+    pair_score, edge1, edge2, oy1, oy2, sep = pair
+    top_y, bottom_y = float(oy1), float(oy2)
+    e1_top, e2_top = _x_at_y(edge1, top_y), _x_at_y(edge2, top_y)
+    e1_bottom, e2_bottom = _x_at_y(edge1, bottom_y), _x_at_y(edge2, bottom_y)
+    if None in (e1_top, e2_top, e1_bottom, e2_bottom):
+        reasons.append("axis_interpolation_failed")
+        return result
+    top_x = (e1_top + e2_top) / 2
+    bottom_x = (e1_bottom + e2_bottom) / 2
+    raw_angle = _line_angle_deg(int(top_x), int(top_y), int(bottom_x), int(bottom_y))
+
+    baseline, baseline_conf = _scene_vertical(frame, (x1, y1, x2, y2))
+    if baseline is None:
+        reasons.append("no_reliable_vertical_reference")
+        return result
+
+    corrected = abs(raw_angle - baseline)
+    visible_ratio = (bottom_y - top_y) / max(1.0, bh)
+    geometry_conf = min(1.0, pair_score * 0.65 + baseline_conf * 0.25 + min(1.0, visible_ratio) * 0.10)
+
+    # Conservative base visibility: a bbox coordinate cannot prove ground contact.
+    # Until segmentation/ground-contact validation exists, keep it false.
+    base_visible = False
+    reasons.append("pole_ground_connection_not_verified")
+
+    angle_valid = geometry_conf >= 0.62 and visible_ratio >= 0.45 and corrected <= 35.0
+    if not angle_valid:
+        reasons.append("geometry_confidence_too_low")
+        return result
+
+    axis = [int(round(top_x + x1)), int(round(top_y + y1)),
+            int(round(bottom_x + x1)), int(round(bottom_y + y1))]
+    result.update({
+        "tilt_degrees": round(corrected, 1),
+        "corrected_tilt_degrees": round(corrected, 1),
+        "raw_axis_angle_degrees": round(raw_angle, 1),
+        "baseline_deg": round(baseline, 1),
+        "angle_is_valid": True,
+        "base_visible": base_visible,
+        "base_occluded": True,
+        "occlusion_reason": "pole_ground_connection_not_verified",
+        "axis": axis,
+        "geometry_confidence": round(geometry_conf, 3),
+        "confidence_factor": round(geometry_conf, 3),
+    })
+    return result
 
 
-def classify_tilt(subtype: str, tilt: float, thresholds=None):
-    """Return (is_hazard, severity_str) for a measured tilt.
-    <monitor: not a hazard. monitor..suspect: low. suspect..high: medium.
-    >high: high. (Field inspection always required — see business logic.)"""
+def classify_tilt(subtype: str, tilt: float | None, thresholds=None):
+    if tilt is None:
+        return False, None
     mon, sus, high = thresholds or SUBTYPE_THRESHOLDS.get(subtype, (3, 5, 10))
     if tilt < mon:
         return False, None

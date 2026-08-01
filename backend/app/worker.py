@@ -166,20 +166,20 @@ def scan_tilt_hazards(db, detected, frame, *, route_id, image_id, camera=None,
         if not subtype:
             continue
         res = tiltmod.estimate_tilt(frame, a.box)
-        if not res:
+        if not res or not res.get("angle_is_valid"):
             continue
-        is_hz, sev = tiltmod.classify_tilt(subtype, res["tilt_degrees"])
+        is_hz, sev = tiltmod.classify_tilt(subtype, res.get("corrected_tilt_degrees"))
         if not is_hz:
             continue
         _obs, hz = hsvc.ingest_observation(
             db, category_key=tiltmod.LEANING_KEY, subtype=subtype,
-            confidence=round(min(0.99, a.confidence * (0.6 + 0.4 * res["confidence_factor"])), 3),
+            confidence=round(min(a.confidence, res["geometry_confidence"]), 3),
             vehicle_lat=vehicle_lat, vehicle_lng=vehicle_lng, heading_deg=heading_deg,
             camera=camera, bbox=",".join(str(round(x, 1)) for x in a.box),
             crop_path=a.crop_path, annotated_path=annotated_path,
             route_id=route_id, image_id=image_id, video_segment_id=video_segment_id,
-            detector_name="tilt", detector_version="hough-v1",
-            tilt_degrees=res["tilt_degrees"], baseline_deg=res["baseline_deg"],
+            detector_name="tilt", detector_version="parallel-edges-v2",
+            tilt_degrees=res["corrected_tilt_degrees"], baseline_deg=res["baseline_deg"],
             base_visible=res["base_visible"], cables_condition=res["cables_condition"],
             tilt_axis=",".join(str(v) for v in res["axis"]),
             severity_override=(HazardSeverity(sev) if sev else None),

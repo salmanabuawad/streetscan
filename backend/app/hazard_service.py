@@ -17,8 +17,12 @@ from app.models.hazards import (
 
 _SEV_ORDER = [HazardSeverity.LOW, HazardSeverity.MEDIUM, HazardSeverity.HIGH, HazardSeverity.CRITICAL]
 # statuses a new sighting can dedup into (i.e. still a live hazard)
-_LIVE = (HazardStatus.PENDING_REVIEW, HazardStatus.OPEN, HazardStatus.IN_PROGRESS,
-         HazardStatus.LIKELY_FIXED, HazardStatus.REOPENED)
+_LIVE = (HazardStatus.SUSPECTED, HazardStatus.PENDING_REVIEW, HazardStatus.OPEN,
+         HazardStatus.IN_PROGRESS, HazardStatus.LIKELY_FIXED, HazardStatus.REOPENED)
+
+# Production safety floors. Category settings may be stricter, never looser.
+AI_MIN_OBSERVATION_CONFIDENCE = 0.50
+AI_MIN_LEANING_CONFIDENCE = 0.65
 
 
 def meters_between(a: tuple[float, float], b: tuple[float, float]) -> float:
@@ -126,7 +130,11 @@ def ingest_observation(db: Session, *, category_key: str, confidence: float,
     signal, but no active hazard is opened.
     """
     cat = db.scalar(select(HazardCategory).where(HazardCategory.key == category_key))
-    min_conf = cat.min_confidence if cat else 0.10
+    configured_min = cat.min_confidence if cat else AI_MIN_OBSERVATION_CONFIDENCE
+    if source == HazardSource.AI:
+        min_conf = max(configured_min, AI_MIN_LEANING_CONFIDENCE if category_key == "leaning_pole" else AI_MIN_OBSERVATION_CONFIDENCE)
+    else:
+        min_conf = configured_min
     band = _band(confidence, min_conf)
 
     lat = lng = acc = None
@@ -156,7 +164,7 @@ def ingest_observation(db: Session, *, category_key: str, confidence: float,
     db.flush()
 
     # low confidence or unusable image -> keep only as training signal
-    if band == "low" or image_quality == "unusable" or lat is None:
+    if confidence < min_conf or band == "low" or image_quality == "unusable" or lat is None:
         obs.status = "training_only"
         return obs, None
 
@@ -168,8 +176,12 @@ def ingest_observation(db: Session, *, category_key: str, confidence: float,
         # Leaning poles are never auto-declared a hazard from one frame — they
         # start SUSPECTED and require field inspection. Others auto-open only
         # when the category allows it AND confidence is high.
+        # AI suggestions never directly become OPEN municipal hazards. Human/staff
+        # intake may still open according to category policy.
         if is_leaning:
             status = HazardStatus.SUSPECTED
+        elif source == HazardSource.AI:
+            status = HazardStatus.PENDING_REVIEW
         else:
             auto = (cat.auto_open_allowed if cat else True) and band == "high"
             status = HazardStatus.OPEN if auto else HazardStatus.PENDING_REVIEW
@@ -215,15 +227,29 @@ def ingest_observation(db: Session, *, category_key: str, confidence: float,
     # severity can only rise from a repeat sighting
     if _SEV_ORDER.index(severity) > _SEV_ORDER.index(hz.severity):
         hz.severity = severity
-    # leaning pole: confirmed across frames/scans, and worsening tilt escalates
+    # Leaning pole: aggregate valid observations robustly. Never retain the
+    # maximum noisy angle as the representative value.
     if is_leaning and tilt_degrees is not None:
+        import statistics
         if base_visible and not hz.base_visible:
             hz.base_visible = True
-        if hz.tilt_degrees is not None and tilt_degrees > hz.tilt_degrees + 2.0:
-            hz.tilt_worsening = True
-            _log(db, hz, hz.status.value, hz.status.value,
-                 f"tilt worsening: {hz.tilt_degrees}° -> {tilt_degrees}°")
-        hz.tilt_degrees = max(hz.tilt_degrees or 0.0, tilt_degrees)
+        values = list(db.scalars(select(HazardObservation.tilt_degrees).where(
+            HazardObservation.hazard_id == hz.id,
+            HazardObservation.tilt_degrees.is_not(None),
+            HazardObservation.status != "rejected",
+        )).all())
+        values = [float(v) for v in values if v is not None]
+        old_tilt = hz.tilt_degrees
+        if values:
+            hz.tilt_degrees = round(float(statistics.median(values)), 1)
+            if len(values) >= 5:
+                spread = statistics.pstdev(values)
+                if spread <= 2.0 and hz.status == HazardStatus.SUSPECTED:
+                    hz.status = HazardStatus.PENDING_REVIEW
+                    _log(db, hz, prev_status.value, hz.status.value,
+                         f"multi-frame tilt confirmed: median {hz.tilt_degrees}°, stddev {spread:.1f}°")
+            if old_tilt is not None and hz.tilt_degrees > old_tilt + 2.0:
+                hz.tilt_worsening = True
     # a hazard we thought was fixed showing up again -> reopen
     if hz.status == HazardStatus.LIKELY_FIXED:
         hz.status = HazardStatus.REOPENED
